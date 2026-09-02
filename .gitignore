@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+scores.json
+*.png
+.DS_Store
