@@ -92,6 +92,7 @@ const LINE_SCORES = [0, 100, 300, 500, 800]; // 0,1,2,3,4 lines
 
 // ─── GAME STATE ───
 let board = [];
+let gemBoard = [];            // parallel board: true if cell has a gem
 let currentPiece = null;
 let heldPiece = null;
 let canHold = true;
@@ -112,6 +113,15 @@ let lockDelay = 0;
 let lockLimit = 500; // ms before lock
 let lineFlashRows = [];
 let lineFlashTime = 0;
+
+// ─── GEM SYSTEM STATE ───
+let gemTimeThreshold = 0;     // seconds until gem activates (10-30)
+let gemBlockThreshold = 0;    // blocks until gem activates (100-500)
+let gemTimerElapsed = 0;      // seconds elapsed since last gem reset
+let gemBlocksDropped = 0;     // blocks dropped since last gem reset
+let gemNextPieceReady = false; // flag: the NEXT spawned piece gets a gem
+let gemBonusPopup = null;     // {text, x, y, time} for "x10" popup animation
+let totalGemsCollected = 0;   // lifetime gems cleared this game
 
 // Canvas refs
 let canvas, ctx;
@@ -186,19 +196,64 @@ function isValid(piece, rowOff, colOff, rotation) {
   return abs.every(([r, c]) => r >= 0 && r < TOTAL_ROWS && c >= 0 && c < COLS && board[r][c] === 0);
 }
 
+// ─── GEM HELPERS ───
+function resetGemCounters() {
+  gemTimeThreshold = 10 + Math.floor(Math.random() * 21);   // 10-30
+  gemBlockThreshold = 100 + Math.floor(Math.random() * 401); // 100-500
+  gemTimerElapsed = 0;
+  gemBlocksDropped = 0;
+  gemNextPieceReady = false;
+  updateGemUI();
+}
+
+function checkGemTrigger() {
+  if (gemNextPieceReady) return; // already triggered, waiting for spawn
+  if (gemTimerElapsed >= gemTimeThreshold || gemBlocksDropped >= gemBlockThreshold) {
+    gemNextPieceReady = true;
+    updateGemUI();
+  }
+}
+
+function updateGemUI() {
+  const el = document.getElementById('gem-status');
+  if (!el) return;
+  if (gemNextPieceReady) {
+    el.textContent = '준비됨!';
+    el.className = 'panel-value gem-ready';
+  } else {
+    // Show whichever condition is closer (as percentage)
+    const timePct = Math.min(100, Math.floor((gemTimerElapsed / gemTimeThreshold) * 100));
+    const blockPct = Math.min(100, Math.floor((gemBlocksDropped / gemBlockThreshold) * 100));
+    const pct = Math.max(timePct, blockPct);
+    el.textContent = `${pct}%`;
+    el.className = 'panel-value' + (pct >= 70 ? ' gem-near' : '');
+  }
+}
+
 // ─── BOARD ───
 function createBoard() {
   board = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(0));
+  gemBoard = Array.from({ length: TOTAL_ROWS }, () => Array(COLS).fill(false));
 }
 
 function lockPiece() {
   const abs = getAbsCells(currentPiece);
-  abs.forEach(([r, c]) => {
+  abs.forEach(([r, c], idx) => {
     if (r >= 0 && r < TOTAL_ROWS && c >= 0 && c < COLS) {
       board[r][c] = currentPiece.id;
+      // If this piece has a gem and this is the gem cell, mark it
+      if (currentPiece.hasGem && idx === currentPiece.gemCellIndex) {
+        gemBoard[r][c] = true;
+      }
     }
   });
   canHold = true;
+
+  // Count this block for gem system
+  gemBlocksDropped++;
+  checkGemTrigger();
+  updateGemUI();
+
   clearLines();
   spawnPiece();
 }
@@ -212,20 +267,54 @@ function clearLines() {
   }
   if (fullRows.length === 0) return;
 
-  // Flash animation
+  // Check if any cleared row contains a gem
+  let hasGemInCleared = false;
+  for (const r of fullRows) {
+    for (let c = 0; c < COLS; c++) {
+      if (gemBoard[r][c]) {
+        hasGemInCleared = true;
+        break;
+      }
+    }
+    if (hasGemInCleared) break;
+  }
+
+  // Flash animation — gem rows flash gold instead of white
   lineFlashRows = fullRows;
   lineFlashTime = performance.now();
+  lineFlashGem = hasGemInCleared;
 
   setTimeout(() => {
+    // Remove rows from both boards
     fullRows.forEach(r => {
       board.splice(r, 1);
       board.unshift(Array(COLS).fill(0));
+      gemBoard.splice(r, 1);
+      gemBoard.unshift(Array(COLS).fill(false));
     });
     lineFlashRows = [];
+    lineFlashGem = false;
 
     const cleared = fullRows.length;
     lines += cleared;
-    score += LINE_SCORES[cleared] * level;
+
+    // SCORING: 10x multiplier if gem was in cleared rows
+    const multiplier = hasGemInCleared ? 10 : 1;
+    const gained = LINE_SCORES[cleared] * level * multiplier;
+    score += gained;
+
+    if (hasGemInCleared) {
+      totalGemsCollected++;
+      // Show x10 bonus popup
+      gemBonusPopup = {
+        text: `x10 GEM! +${gained.toLocaleString()}`,
+        y: (fullRows[0] - HIDDEN_ROWS) * CELL,
+        time: performance.now(),
+      };
+      // Reset gem counters for next cycle
+      resetGemCounters();
+    }
+
     level = Math.floor(lines / 10) + 1;
     dropSpeed = Math.max(80, 800 - (level - 1) * 60);
 
@@ -233,10 +322,24 @@ function clearLines() {
   }, 200);
 }
 
+let lineFlashGem = false; // true if gem flash (golden)
+
 function spawnPiece() {
   fillQueue();
   const name = nextQueue.shift();
   currentPiece = createPiece(name);
+
+  // Gem system: attach gem to this piece if triggered
+  if (gemNextPieceReady) {
+    currentPiece.hasGem = true;
+    const cellCount = getPieceCells(currentPiece).length;
+    currentPiece.gemCellIndex = Math.floor(Math.random() * cellCount);
+    gemNextPieceReady = false;
+    // Don't reset counters yet — reset happens when gem line is cleared
+    // But DO reset the trigger counters so next cycle starts fresh
+    resetGemCounters();
+  }
+
   fillQueue();
   drawNextPreviews();
 
@@ -307,11 +410,19 @@ function rotate() {
 function holdPiece() {
   if (!currentPiece || !canHold || !isPlaying || isPaused) return;
   canHold = false;
+  const hadGem = currentPiece.hasGem;
+  const gemIdx = currentPiece.gemCellIndex;
   const name = currentPiece.name;
   if (heldPiece) {
     const held = heldPiece;
     heldPiece = name;
     currentPiece = createPiece(held);
+    // Transfer gem to the swapped piece
+    if (hadGem) {
+      currentPiece.hasGem = true;
+      const cellCount = getPieceCells(currentPiece).length;
+      currentPiece.gemCellIndex = Math.min(gemIdx, cellCount - 1);
+    }
   } else {
     heldPiece = name;
     spawnPiece();
@@ -336,7 +447,7 @@ function getGhostRow() {
 }
 
 // ─── RENDERING ───
-function drawCell(ctx, x, y, size, colorIdx, ghost) {
+function drawCell(ctx, x, y, size, colorIdx, ghost, hasGem) {
   if (!colorIdx) return;
   const color = COLORS[colorIdx];
   const glow = GLOW[colorIdx];
@@ -346,6 +457,11 @@ function drawCell(ctx, x, y, size, colorIdx, ghost) {
     ctx.lineWidth = 1.5;
     ctx.globalAlpha = 0.3;
     ctx.strokeRect(x + 1, y + 1, size - 2, size - 2);
+    if (hasGem) {
+      // Ghost gem hint
+      ctx.globalAlpha = 0.15;
+      drawGemIcon(ctx, x, y, size);
+    }
     ctx.globalAlpha = 1;
     return;
   }
@@ -370,6 +486,67 @@ function drawCell(ctx, x, y, size, colorIdx, ghost) {
   ctx.fillStyle = 'transparent';
   ctx.fillRect(x, y, size, size);
   ctx.shadowBlur = 0;
+
+  // Draw gem overlay if this cell has a gem
+  if (hasGem) {
+    drawGemIcon(ctx, x, y, size);
+  }
+}
+
+// ─── GEM ICON RENDERER ───
+function drawGemIcon(ctx, x, y, size) {
+  const cx = x + size / 2;
+  const cy = y + size / 2;
+  const s = size * 0.36;
+  const pulse = 0.9 + 0.1 * Math.sin(performance.now() / 200); // subtle pulse
+  const ps = s * pulse;
+
+  ctx.save();
+
+  // Outer glow
+  ctx.shadowColor = '#ffe066';
+  ctx.shadowBlur = 10;
+
+  // Diamond shape
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - ps);        // top
+  ctx.lineTo(cx + ps, cy);        // right
+  ctx.lineTo(cx, cy + ps);        // bottom
+  ctx.lineTo(cx - ps, cy);        // left
+  ctx.closePath();
+
+  // Fill with golden gradient
+  const grad = ctx.createLinearGradient(cx - ps, cy - ps, cx + ps, cy + ps);
+  grad.addColorStop(0, '#fffbe6');
+  grad.addColorStop(0.3, '#ffe066');
+  grad.addColorStop(0.6, '#ffb300');
+  grad.addColorStop(1, '#ff8f00');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Inner highlight
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - ps * 0.5);
+  ctx.lineTo(cx + ps * 0.3, cy);
+  ctx.lineTo(cx, cy + ps * 0.2);
+  ctx.lineTo(cx - ps * 0.3, cy);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.fill();
+
+  // Border
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - ps);
+  ctx.lineTo(cx + ps, cy);
+  ctx.lineTo(cx, cy + ps);
+  ctx.lineTo(cx - ps, cy);
+  ctx.closePath();
+  ctx.strokeStyle = 'rgba(255,180,0,0.8)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 function drawBoard() {
@@ -398,16 +575,20 @@ function drawBoard() {
     for (let c = 0; c < COLS; c++) {
       if (board[r][c]) {
         const vr = r - HIDDEN_ROWS;
-        drawCell(ctx, c * CELL, vr * CELL, CELL, board[r][c], false);
+        drawCell(ctx, c * CELL, vr * CELL, CELL, board[r][c], false, gemBoard[r][c]);
       }
     }
   }
 
-  // Line clear flash
+  // Line clear flash (golden if gem, white otherwise)
   if (lineFlashRows.length > 0) {
     const elapsed = performance.now() - lineFlashTime;
     const alpha = Math.max(0, 1 - elapsed / 200);
-    ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.7})`;
+    if (lineFlashGem) {
+      ctx.fillStyle = `rgba(255, 215, 0, ${alpha * 0.85})`;
+    } else {
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.7})`;
+    }
     lineFlashRows.forEach(r => {
       const vr = r - HIDDEN_ROWS;
       ctx.fillRect(0, vr * CELL, canvas.width, CELL);
@@ -419,28 +600,52 @@ function drawBoard() {
     const ghostRow = getGhostRow();
     if (ghostRow !== currentPiece.row) {
       const cells = getPieceCells(currentPiece);
-      cells.forEach(([dr, dc]) => {
+      cells.forEach(([dr, dc], idx) => {
         const vr = ghostRow + dr - HIDDEN_ROWS;
         const vc = currentPiece.col + dc;
+        const isGemCell = currentPiece.hasGem && idx === currentPiece.gemCellIndex;
         if (vr >= 0 && vr < ROWS) {
-          drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, true);
+          drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, true, isGemCell);
         }
       });
     }
 
     // Current piece
     const pcells = getPieceCells(currentPiece);
-    pcells.forEach(([dr, dc]) => {
+    pcells.forEach(([dr, dc], idx) => {
       const vr = currentPiece.row + dr - HIDDEN_ROWS;
       const vc = currentPiece.col + dc;
+      const isGemCell = currentPiece.hasGem && idx === currentPiece.gemCellIndex;
       if (vr >= 0 && vr < ROWS) {
-        drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, false);
+        drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, false, isGemCell);
       }
     });
   }
+
+  // Draw gem bonus popup
+  if (gemBonusPopup) {
+    const elapsed = performance.now() - gemBonusPopup.time;
+    const duration = 1500;
+    if (elapsed < duration) {
+      const progress = elapsed / duration;
+      const alpha = 1 - progress;
+      const yOff = -progress * 60;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = 'bold 22px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffd700';
+      ctx.shadowColor = '#ff8c00';
+      ctx.shadowBlur = 15;
+      ctx.fillText(gemBonusPopup.text, canvas.width / 2, Math.max(30, gemBonusPopup.y + yOff));
+      ctx.restore();
+    } else {
+      gemBonusPopup = null;
+    }
+  }
 }
 
-function drawPreview(ctx, canvas, pieceName) {
+function drawPreview(ctx, canvas, pieceName, showGem, gemIdx) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!pieceName) return;
 
@@ -455,8 +660,9 @@ function drawPreview(ctx, canvas, pieceName) {
   const offX = (canvas.width - w * NEXT_CELL) / 2;
   const offY = (canvas.height - h * NEXT_CELL) / 2;
 
-  cells.forEach(([r, c]) => {
-    drawCell(ctx, offX + (c - minC) * NEXT_CELL, offY + (r - minR) * NEXT_CELL, NEXT_CELL, shape.id, false);
+  cells.forEach(([r, c], idx) => {
+    const isGem = showGem && idx === gemIdx;
+    drawCell(ctx, offX + (c - minC) * NEXT_CELL, offY + (r - minR) * NEXT_CELL, NEXT_CELL, shape.id, false, isGem);
   });
 }
 
@@ -467,7 +673,9 @@ function drawNextPreviews() {
 }
 
 function drawHoldPreview() {
-  drawPreview(holdCtx, holdCanvas, heldPiece);
+  // If hold piece has the gem (transferred via hold), show it
+  // We don't track gem on held piece separately — gem stays on currentPiece
+  drawPreview(holdCtx, holdCanvas, heldPiece, false, -1);
 }
 
 // ─── UI UPDATES ───
@@ -483,6 +691,13 @@ function updateTimer() {
   const secs = playTime % 60;
   const display = mins > 0 ? `${mins}분 ${secs}초` : `${secs}초`;
   document.getElementById('time-display').textContent = display;
+
+  // Gem timer tick
+  if (isPlaying && !isPaused) {
+    gemTimerElapsed++;
+    checkGemTrigger();
+    updateGemUI();
+  }
 }
 
 // ─── GAME LOOP ───
@@ -531,8 +746,12 @@ function startGame() {
   lockDelay = 0;
   lastDrop = 0;
   lineFlashRows = [];
+  lineFlashGem = false;
   bag = [];
   nextQueue = [];
+  gemBonusPopup = null;
+  totalGemsCollected = 0;
+  resetGemCounters();
 
   updateUI();
   document.getElementById('time-display').textContent = '0초';

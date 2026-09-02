@@ -185,6 +185,40 @@ html, body {
 .lines-box .panel-value { color: var(--green); }
 .time-box .panel-value { font-size: 16px; color: var(--text-primary); }
 
+/* Gem status box */
+.gem-box {
+  border-color: rgba(255, 215, 0, 0.25);
+  background: linear-gradient(135deg, var(--bg-card), rgba(60, 40, 0, 0.3));
+}
+.gem-box .panel-label {
+  color: #ffd700;
+}
+.gem-box .panel-value {
+  font-size: 18px;
+  color: var(--text-secondary);
+  transition: all 0.3s ease;
+}
+.gem-box .panel-value.gem-near {
+  color: #ffb300;
+  text-shadow: 0 0 8px rgba(255,180,0,0.5);
+}
+.gem-box .panel-value.gem-ready {
+  color: #ffd700;
+  text-shadow: 0 0 15px rgba(255,215,0,0.8);
+  animation: gemPulse 0.8s ease-in-out infinite;
+}
+.gem-hint {
+  margin-top: 6px;
+  font-size: 9px;
+  color: rgba(255,215,0,0.5);
+  letter-spacing: 1px;
+}
+
+@keyframes gemPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.12); opacity: 0.85; }
+}
+
 .hold-box canvas, .next-box canvas {
   display: block;
   margin: 0 auto;
