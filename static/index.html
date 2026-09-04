@@ -19,8 +19,11 @@
         <p class="subtitle">클래식 테트리스 게임</p>
       </div>
       <div class="menu-buttons">
-        <button class="btn btn-start" onclick="startGame()">
-          <span class="btn-icon">▶</span> 게임 시작
+        <button class="btn btn-start" onclick="startGame('classic')">
+          <span class="btn-icon">▶</span> 클래식 모드
+        </button>
+        <button class="btn btn-rising" onclick="startGame('rising')">
+          <span class="btn-icon">⬆</span> 라이징 모드
         </button>
         <button class="btn btn-score" onclick="showScores()">
           <span class="btn-icon">🏆</span> 스코어
@@ -28,6 +31,10 @@
         <button class="btn btn-quit" onclick="quitGame()">
           <span class="btn-icon">✕</span> 게임 종료
         </button>
+      </div>
+      <div class="mode-descriptions">
+        <p class="mode-desc"><strong>클래식</strong> — 전통 테트리스</p>
+        <p class="mode-desc"><strong>라이징</strong> — 아래에서 블록이 올라온다! 살아남아라!</p>
       </div>
       <div class="menu-footer">
         <p>조작법: ← → 이동 &nbsp;|&nbsp; ↑ 회전 &nbsp;|&nbsp; ↓ 소프트드롭 &nbsp;|&nbsp; Space 하드드롭 &nbsp;|&nbsp; P 일시정지</p>
@@ -63,6 +70,14 @@
           <div class="panel-value" id="gem-status">0%</div>
           <div class="gem-hint">줄 제거 시 x10 점수!</div>
         </div>
+        <div class="panel-box rising-box" id="rising-panel" style="display:none;">
+          <div class="panel-label">⬆ 라이징 속도</div>
+          <div class="panel-value" id="rising-speed-display">5.0초</div>
+          <div class="rising-bar-wrap">
+            <div class="rising-bar" id="rising-bar"></div>
+          </div>
+          <div class="rising-hint" id="rising-hint">다음 줄까지 5초</div>
+        </div>
         <div class="panel-box hold-box">
           <div class="panel-label">홀드 (C)</div>
           <canvas id="hold-canvas" width="100" height="100"></canvas>
@@ -92,7 +107,7 @@
               <input type="text" id="player-name" placeholder="이름 입력" maxlength="20" value="Player" />
             </div>
             <button class="btn btn-save" onclick="saveScore()">저장 & 메뉴</button>
-            <button class="btn btn-retry" onclick="startGame()">다시하기</button>
+            <button class="btn btn-retry" id="retry-btn" onclick="startGame('classic')">다시하기</button>
           </div>
         </div>
       </div>

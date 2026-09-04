@@ -91,6 +91,7 @@ const WALL_KICKS = [
 const LINE_SCORES = [0, 100, 300, 500, 800]; // 0,1,2,3,4 lines
 
 // ─── GAME STATE ───
+let gameMode = 'classic';     // 'classic' or 'rising'
 let board = [];
 let gemBoard = [];            // parallel board: true if cell has a gem
 let currentPiece = null;
@@ -122,6 +123,19 @@ let gemBlocksDropped = 0;     // blocks dropped since last gem reset
 let gemNextPieceReady = false; // flag: the NEXT spawned piece gets a gem
 let gemBonusPopup = null;     // {text, x, y, time} for "x10" popup animation
 let totalGemsCollected = 0;   // lifetime gems cleared this game
+
+// ─── RISING MODE STATE ───
+const RISING_INITIAL_SPEED = 5.0; // seconds
+const RISING_FINAL_SPEED = 2.0;   // seconds
+const RISING_MAX_LEVEL = 10;      // level cap for speed calc
+const RISING_MAX_TIME = 120;      // seconds cap for speed calc
+const RISING_CHUNK_COLORS = [1, 2, 3, 4, 5, 6, 7]; // color ids for chunks
+let risingAccumulator = 0;        // ms accumulated toward next rising row
+let risingSpeed = RISING_INITIAL_SPEED; // current interval in seconds
+let risingLastGaps = [];          // gap columns of last row (for consecutive gap limit)
+let risingConsecutiveGap = {};    // col -> count of consecutive gaps
+let risingFlashTime = 0;          // timestamp for bottom-row flash
+let risingRowsPushed = 0;         // total rows pushed up this game
 
 // Canvas refs
 let canvas, ctx;
@@ -595,6 +609,33 @@ function drawBoard() {
     });
   }
 
+  // Rising mode: flash on bottom row when new row pushed
+  if (gameMode === 'rising' && risingFlashTime > 0) {
+    const elapsed = performance.now() - risingFlashTime;
+    if (elapsed < 300) {
+      const alpha = Math.max(0, 1 - elapsed / 300) * 0.5;
+      ctx.fillStyle = `rgba(255, 100, 50, ${alpha})`;
+      ctx.fillRect(0, (ROWS - 1) * CELL, canvas.width, CELL);
+    }
+  }
+
+  // Rising mode: draw a subtle warning line showing rising progress
+  if (gameMode === 'rising') {
+    const pct = risingAccumulator / (risingSpeed * 1000);
+    if (pct > 0.3) {
+      const warningAlpha = Math.min(0.15, pct * 0.2);
+      ctx.fillStyle = `rgba(255, 80, 30, ${warningAlpha})`;
+      ctx.fillRect(0, (ROWS - 1) * CELL, canvas.width, CELL);
+    }
+    // Mode badge
+    ctx.save();
+    ctx.font = '10px "Press Start 2P", monospace';
+    ctx.fillStyle = 'rgba(255, 100, 50, 0.4)';
+    ctx.textAlign = 'right';
+    ctx.fillText('RISING', canvas.width - 6, 14);
+    ctx.restore();
+  }
+
   // Ghost piece
   if (currentPiece) {
     const ghostRow = getGhostRow();
@@ -698,14 +739,26 @@ function updateTimer() {
     checkGemTrigger();
     updateGemUI();
   }
+
+  // Rising mode: update speed based on time + level
+  if (gameMode === 'rising' && isPlaying && !isPaused) {
+    updateRisingSpeed();
+  }
 }
 
 // ─── GAME LOOP ───
+let lastFrameTime = 0;
+
 function gameLoop(timestamp) {
   if (!isPlaying || isPaused) {
+    lastFrameTime = 0;
     animFrame = requestAnimationFrame(gameLoop);
     return;
   }
+
+  // Frame delta for rising mode
+  const frameDelta = lastFrameTime ? (timestamp - lastFrameTime) : 0;
+  lastFrameTime = timestamp;
 
   if (!lastDrop) lastDrop = timestamp;
   const delta = timestamp - lastDrop;
@@ -726,12 +779,25 @@ function gameLoop(timestamp) {
     lockDelay = 0;
   }
 
+  // Rising mode: accumulate time and push rows
+  if (gameMode === 'rising' && frameDelta > 0 && frameDelta < 500) {
+    risingAccumulator += frameDelta;
+    const intervalMs = risingSpeed * 1000;
+    // Update progress bar
+    updateRisingProgressBar();
+    while (risingAccumulator >= intervalMs) {
+      risingAccumulator -= intervalMs;
+      pushRisingRow();
+    }
+  }
+
   drawBoard();
   animFrame = requestAnimationFrame(gameLoop);
 }
 
 // ─── GAME CONTROLS ───
-function startGame() {
+function startGame(mode) {
+  gameMode = mode || 'classic';
   switchScreen('game-screen');
   initCanvases();
   createBoard();
@@ -745,6 +811,7 @@ function startGame() {
   canHold = true;
   lockDelay = 0;
   lastDrop = 0;
+  lastFrameTime = 0;
   lineFlashRows = [];
   lineFlashGem = false;
   bag = [];
@@ -753,9 +820,29 @@ function startGame() {
   totalGemsCollected = 0;
   resetGemCounters();
 
+  // Rising mode init
+  risingAccumulator = 0;
+  risingSpeed = RISING_INITIAL_SPEED;
+  risingLastGaps = [];
+  risingConsecutiveGap = {};
+  risingFlashTime = 0;
+  risingRowsPushed = 0;
+
+  // Show/hide rising panel
+  const risingPanel = document.getElementById('rising-panel');
+  if (risingPanel) risingPanel.style.display = gameMode === 'rising' ? 'block' : 'none';
+
+  // Update retry button to remember mode
+  const retryBtn = document.getElementById('retry-btn');
+  if (retryBtn) retryBtn.setAttribute('onclick', `startGame('${gameMode}')`);
+
+  // Update mode badge on game screen
+  updateModeLabel();
+
   updateUI();
   document.getElementById('time-display').textContent = '0초';
   drawHoldPreview();
+  if (gameMode === 'rising') updateRisingUI();
 
   // Hide overlays
   document.getElementById('pause-overlay').classList.add('hidden');
@@ -775,6 +862,10 @@ function startGame() {
   animFrame = requestAnimationFrame(gameLoop);
 }
 
+function updateModeLabel() {
+  // We'll draw mode badge in drawBoard instead
+}
+
 function togglePause() {
   if (!isPlaying) return;
   isPaused = !isPaused;
@@ -784,6 +875,7 @@ function togglePause() {
   } else {
     timerInterval = setInterval(updateTimer, 1000);
     lastDrop = 0;
+    lastFrameTime = 0; // reset frame timer so rising doesn't jump
   }
 }
 
@@ -804,6 +896,11 @@ function gameOver() {
   document.getElementById('final-time').textContent = mins > 0 ? `${mins}분 ${secs}초` : `${secs}초`;
 
   document.getElementById('gameover-overlay').classList.remove('hidden');
+
+  // Show mode info in game over
+  const modeTag = gameMode === 'rising' ? ' (라이징)' : '';
+  const goTitle = document.querySelector('#gameover-overlay h2');
+  if (goTitle) goTitle.textContent = '게임 오버' + modeTag;
 }
 
 async function saveScore() {
@@ -812,7 +909,7 @@ async function saveScore() {
     await fetch('/api/scores', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, score, lines, level, playTime }),
+      body: JSON.stringify({ name, score, lines, level, playTime, mode: gameMode }),
     });
   } catch (e) {
     console.log('Score save failed (offline mode)');
@@ -954,6 +1051,197 @@ document.addEventListener('keyup', (e) => {
     moveRepeatTimer = null;
   }
 });
+
+// ─── RISING MODE SYSTEM ───
+
+/**
+ * Calculate rising speed based on level (max 10) and time (max 120s).
+ * Formula: linear interpolation from 5.0s to 2.0s.
+ * levelFactor = min(level, 10) / 10  → 0.0 to 1.0
+ * timeFactor  = min(time, 120) / 120 → 0.0 to 1.0
+ * combined    = (levelFactor + timeFactor) / 2  → 0.0 to 1.0
+ * speed       = 5.0 - combined * 3.0            → 5.0 to 2.0
+ */
+function updateRisingSpeed() {
+  const lvlFactor = Math.min(level, RISING_MAX_LEVEL) / RISING_MAX_LEVEL;
+  const timeFactor = Math.min(playTime, RISING_MAX_TIME) / RISING_MAX_TIME;
+  const combined = (lvlFactor + timeFactor) / 2;
+  risingSpeed = RISING_INITIAL_SPEED - combined * (RISING_INITIAL_SPEED - RISING_FINAL_SPEED);
+  risingSpeed = Math.max(RISING_FINAL_SPEED, risingSpeed);
+  updateRisingUI();
+}
+
+function updateRisingUI() {
+  const el = document.getElementById('rising-speed-display');
+  if (el) el.textContent = risingSpeed.toFixed(1) + '초';
+  const hint = document.getElementById('rising-hint');
+  if (hint) {
+    const remaining = Math.max(0, risingSpeed * 1000 - risingAccumulator);
+    hint.textContent = `다음 줄까지 ${(remaining / 1000).toFixed(1)}초`;
+  }
+}
+
+function updateRisingProgressBar() {
+  const bar = document.getElementById('rising-bar');
+  if (!bar) return;
+  const pct = Math.min(100, (risingAccumulator / (risingSpeed * 1000)) * 100);
+  bar.style.width = pct + '%';
+  // Color: green -> yellow -> red
+  if (pct < 50) bar.style.background = 'var(--green)';
+  else if (pct < 80) bar.style.background = 'var(--yellow)';
+  else bar.style.background = 'var(--red)';
+}
+
+/**
+ * Generate one rising row and push the entire board up by 1.
+ * Row structure: 2 or 3 "chunks" of solid blocks with 1-3 gaps.
+ * Gap constraint: a gap column can only repeat directly below itself
+ * at most 2 consecutive times.
+ */
+function pushRisingRow() {
+  if (!isPlaying || isPaused) return;
+
+  // 1) Generate the new row
+  const newRow = generateRisingRow();
+  const newGemRow = Array(COLS).fill(false);
+
+  // 2) Check if pushing up would cause game over
+  //    (top hidden row has blocks that would go above the board)
+  for (let c = 0; c < COLS; c++) {
+    if (board[0][c] !== 0) {
+      gameOver();
+      return;
+    }
+  }
+
+  // 3) Push board up: remove top row, add new row at bottom
+  board.shift();
+  board.push(newRow);
+  gemBoard.shift();
+  gemBoard.push(newGemRow);
+
+  // 4) Move current piece up by 1 (it stays in same visual position
+  //    relative to the board which just shifted down)
+  if (currentPiece) {
+    currentPiece.row--;
+    // If piece now collides, push it up more or game over
+    if (currentPiece.row < 0) {
+      // Try to keep piece in bounds
+      currentPiece.row = 0;
+    }
+    if (!isValid(currentPiece, 0, 0)) {
+      // Try pushing piece up
+      for (let nudge = -1; nudge >= -3; nudge--) {
+        const test = { ...currentPiece, row: currentPiece.row + nudge };
+        if (test.row >= 0 && isValid(test, 0, 0)) {
+          currentPiece.row = test.row;
+          break;
+        }
+      }
+      // If still invalid, game over
+      if (!isValid(currentPiece, 0, 0)) {
+        gameOver();
+        return;
+      }
+    }
+  }
+
+  risingRowsPushed++;
+  risingFlashTime = performance.now();
+
+  // Bonus points for surviving
+  score += 5 * level;
+  updateUI();
+}
+
+/**
+ * Generate a rising row with chunk/gap structure.
+ * - Total columns: 10
+ * - Gaps: 1 to 3 random empty cells
+ * - Remaining cells split into 2 or 3 color "chunks"
+ * - Gap placement respects consecutive-gap-below rule (max 2 in a row)
+ */
+function generateRisingRow() {
+  const row = Array(COLS).fill(0);
+
+  // Decide number of gaps: 1 to 3
+  const numGaps = 1 + Math.floor(Math.random() * 3);
+
+  // Pick gap positions, respecting consecutive constraint
+  const gapCols = [];
+  const candidates = [];
+  for (let c = 0; c < COLS; c++) {
+    const consec = risingConsecutiveGap[c] || 0;
+    if (consec < 2) {
+      candidates.push(c);
+    }
+  }
+
+  // If not enough candidates, relax constraint
+  const pool = candidates.length >= numGaps ? candidates : Array.from({length: COLS}, (_, i) => i);
+
+  // Shuffle and pick
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  for (let i = 0; i < numGaps && i < pool.length; i++) {
+    gapCols.push(pool[i]);
+  }
+
+  // Update consecutive gap tracker
+  const newConsecutive = {};
+  for (let c = 0; c < COLS; c++) {
+    if (gapCols.includes(c)) {
+      newConsecutive[c] = (risingConsecutiveGap[c] || 0) + 1;
+    } else {
+      newConsecutive[c] = 0;
+    }
+  }
+  risingConsecutiveGap = newConsecutive;
+
+  // Fill non-gap cells with 2 or 3 color chunks
+  const solidCols = [];
+  for (let c = 0; c < COLS; c++) {
+    if (!gapCols.includes(c)) solidCols.push(c);
+  }
+
+  const numChunks = (solidCols.length >= 6) ? (Math.random() < 0.5 ? 3 : 2) : 2;
+
+  // Split solidCols into chunks
+  const chunkSizes = splitIntoChunks(solidCols.length, numChunks);
+  const usedColors = [];
+  let idx = 0;
+  for (const size of chunkSizes) {
+    // Pick a color not recently used
+    let colorId;
+    do {
+      colorId = RISING_CHUNK_COLORS[Math.floor(Math.random() * RISING_CHUNK_COLORS.length)];
+    } while (usedColors.includes(colorId) && usedColors.length < RISING_CHUNK_COLORS.length);
+    usedColors.push(colorId);
+
+    for (let i = 0; i < size; i++) {
+      row[solidCols[idx]] = colorId;
+      idx++;
+    }
+  }
+
+  return row;
+}
+
+function splitIntoChunks(total, numChunks) {
+  const sizes = [];
+  let remaining = total;
+  for (let i = 0; i < numChunks - 1; i++) {
+    const maxSize = remaining - (numChunks - 1 - i);
+    const minSize = 1;
+    const size = minSize + Math.floor(Math.random() * (maxSize - minSize + 1));
+    sizes.push(size);
+    remaining -= size;
+  }
+  sizes.push(remaining);
+  return sizes;
+}
 
 // ─── DECORATIVE BG BLOCKS ───
 function createBgBlocks() {

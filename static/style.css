@@ -102,6 +102,13 @@ html, body {
 }
 .btn-start:hover { box-shadow: 0 6px 30px rgba(59, 123, 255, 0.6); }
 
+.btn-rising {
+  background: linear-gradient(135deg, #ff6b3b, #ff3b3b);
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(255, 107, 59, 0.4);
+}
+.btn-rising:hover { box-shadow: 0 6px 30px rgba(255, 107, 59, 0.6); }
+
 .btn-score {
   background: linear-gradient(135deg, #ffd83b, #ff8c3b);
   color: #1a1a3e;
@@ -117,10 +124,23 @@ html, body {
 .btn-quit:hover { box-shadow: 0 6px 30px rgba(255, 59, 59, 0.5); }
 
 .menu-footer {
-  margin-top: 50px;
+  margin-top: 30px;
   color: var(--text-secondary);
   font-size: 13px;
   letter-spacing: 1px;
+}
+
+.mode-descriptions {
+  margin-top: 20px;
+}
+.mode-desc {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 2;
+  letter-spacing: 1px;
+}
+.mode-desc strong {
+  color: var(--text-primary);
 }
 
 /* BG Animated Blocks */
@@ -217,6 +237,40 @@ html, body {
 @keyframes gemPulse {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.12); opacity: 0.85; }
+}
+
+/* Rising mode panel */
+.rising-box {
+  border-color: rgba(255, 100, 50, 0.3);
+  background: linear-gradient(135deg, var(--bg-card), rgba(80, 20, 0, 0.3));
+}
+.rising-box .panel-label {
+  color: #ff6b3b;
+}
+.rising-box .panel-value {
+  font-size: 18px;
+  color: #ff8c3b;
+  text-shadow: 0 0 8px rgba(255,100,50,0.5);
+}
+.rising-bar-wrap {
+  margin-top: 8px;
+  height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.rising-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--green);
+  border-radius: 3px;
+  transition: width 0.1s linear, background 0.3s;
+}
+.rising-hint {
+  margin-top: 4px;
+  font-size: 9px;
+  color: rgba(255,140,59,0.6);
+  letter-spacing: 1px;
 }
 
 .hold-box canvas, .next-box canvas {
