@@ -75,8 +75,21 @@ class TetrisHandler(http.server.SimpleHTTPRequestHandler):
         pass  # Suppress logs for cleaner output
 
 
+import socket
+
+class ReusableTCPServer(socketserver.TCPServer):
+    allow_reuse_address = True
+    def server_bind(self):
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except (AttributeError, OSError):
+            pass
+        super().server_bind()
+
+
 def main():
-    with socketserver.TCPServer(("0.0.0.0", PORT), TetrisHandler) as httpd:
+    with ReusableTCPServer(("0.0.0.0", PORT), TetrisHandler) as httpd:
         print(f"🎮 Tetris server running at http://0.0.0.0:{PORT}")
         httpd.serve_forever()
 
