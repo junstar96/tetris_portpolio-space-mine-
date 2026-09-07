@@ -91,7 +91,7 @@ const WALL_KICKS = [
 const LINE_SCORES = [0, 100, 300, 500, 800]; // 0,1,2,3,4 lines
 
 // ─── GAME STATE ───
-let gameMode = 'classic';     // 'classic' or 'rising'
+let gameMode = 'pirate';      // 'pirate' or 'rising'
 let board = [];
 let gemBoard = [];            // parallel board: true if cell has a gem
 let currentPiece = null;
@@ -136,6 +136,41 @@ let risingLastGaps = [];          // gap columns of last row (for consecutive ga
 let risingConsecutiveGap = {};    // col -> count of consecutive gaps
 let risingFlashTime = 0;          // timestamp for bottom-row flash
 let risingRowsPushed = 0;         // total rows pushed up this game
+
+// ─── PIRATE MODE STATE ───
+const PIRATE_SCORE_TRIGGER = 1000;   // points threshold for spaceship spawn
+const PIRATE_TIME_TRIGGER = 60;      // seconds threshold for spaceship spawn
+const PIRATE_WARN_DURATION = 2000;   // ms warning before ship appears
+const PIRATE_SHIP_ATTACK_INTERVAL = 10000; // 10s between attacks
+const PIRATE_LASER_DURATION = 2000;  // 2s laser on score display
+const PIRATE_SCORE_STEAL = 500;      // points stolen per attack
+const PIRATE_MAX_ATTACKS = 3;        // ship leaves after 3 steals
+const PIRATE_GAUGE_MAX = 2000;       // gauge fill threshold (points worth)
+
+let pirateScoreAccum = 0;            // score accumulated since last trigger reset
+let pirateTimeAccum = 0;             // seconds accumulated since last trigger reset
+let pirateShipActive = false;        // is the pirate ship on screen?
+let pirateWarning = false;           // is the WARNING showing?
+let pirateWarningStart = 0;          // timestamp of warning start
+let pirateShipX = -100;              // ship canvas X position (game-screen coords)
+let pirateShipY = 50;               // ship canvas Y position
+let pirateShipTargetX = 0;          // where ship is headed
+let pirateShipTargetY = 0;          // where ship is headed
+let pirateShipState = 'idle';       // 'entering', 'idle', 'attacking', 'stealing', 'leaving', 'hit', 'dying'
+let pirateShipAttackCount = 0;       // times ship has stolen score
+let pirateTotalStolen = 0;           // total score stolen by current ship
+let pirateAttackTimer = 0;           // ms since last attack or arrival
+let pirateLaserActive = false;       // is laser beam visible
+let pirateLaserStart = 0;            // when laser started
+let pirateGaugeValue = 0;            // current energy gauge fill (0 to PIRATE_GAUGE_MAX)
+let pirateGaugeVisible = false;      // is gauge panel shown
+let pirateCounterLaser = false;      // is counterattack laser firing
+let pirateCounterStart = 0;          // when counterattack began
+let pirateShipDying = false;         // is ship in death animation
+let pirateShipDyingStart = 0;        // when death animation started
+let pirateShipAngle = 0;             // wobble angle during death
+let pirateSmokeParticles = [];       // smoke during death
+let pirateScorePopups = [];          // floating score popups
 
 // Canvas refs
 let canvas, ctx;
@@ -315,7 +350,18 @@ function clearLines() {
     // SCORING: 10x multiplier if gem was in cleared rows
     const multiplier = hasGemInCleared ? 10 : 1;
     const gained = LINE_SCORES[cleared] * level * multiplier;
-    score += gained;
+
+    // Pirate mode: divert to gauge if ship active, else add to score
+    if (gameMode === 'pirate' && pirateShipActive && pirateGaugeVisible) {
+      addPirateGaugeEnergy(gained);
+    } else {
+      score += gained;
+      // Track score for pirate trigger
+      if (gameMode === 'pirate') {
+        pirateScoreAccum += gained;
+        checkPirateSpawnTrigger();
+      }
+    }
 
     if (hasGemInCleared) {
       totalGemsCollected++;
@@ -383,7 +429,13 @@ function moveDown() {
   if (!currentPiece || !isPlaying || isPaused) return;
   if (isValid(currentPiece, 1, 0)) {
     currentPiece.row++;
-    score += 1; // soft drop bonus
+    // Pirate: divert score to gauge if ship active
+    if (gameMode === 'pirate' && pirateShipActive && pirateGaugeVisible) {
+      addPirateGaugeEnergy(1);
+    } else {
+      score += 1; // soft drop bonus
+      if (gameMode === 'pirate') { pirateScoreAccum += 1; }
+    }
     lockDelay = 0;
     updateUI();
     return true;
@@ -398,7 +450,13 @@ function hardDrop() {
     currentPiece.row++;
     dropped++;
   }
-  score += dropped * 2;
+  // Pirate: divert hard drop score to gauge if ship active
+  if (gameMode === 'pirate' && pirateShipActive && pirateGaugeVisible) {
+    addPirateGaugeEnergy(dropped * 2);
+  } else {
+    score += dropped * 2;
+    if (gameMode === 'pirate') { pirateScoreAccum += dropped * 2; }
+  }
   updateUI();
   lockPiece();
 }
@@ -609,6 +667,16 @@ function drawBoard() {
     });
   }
 
+  // Pirate mode badge
+  if (gameMode === 'pirate') {
+    ctx.save();
+    ctx.font = '10px "Press Start 2P", monospace';
+    ctx.fillStyle = 'rgba(180, 50, 255, 0.4)';
+    ctx.textAlign = 'right';
+    ctx.fillText('PIRATE', canvas.width - 6, 14);
+    ctx.restore();
+  }
+
   // Rising mode: flash on bottom row when new row pushed
   if (gameMode === 'rising' && risingFlashTime > 0) {
     const elapsed = performance.now() - risingFlashTime;
@@ -661,6 +729,11 @@ function drawBoard() {
         drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, false, isGemCell);
       }
     });
+  }
+
+  // Draw pirate ship and effects
+  if (gameMode === 'pirate') {
+    drawPirateShip(ctx);
   }
 
   // Draw gem bonus popup
@@ -740,6 +813,12 @@ function updateTimer() {
     updateGemUI();
   }
 
+  // Pirate mode: time accumulation for spawn trigger
+  if (gameMode === 'pirate' && isPlaying && !isPaused) {
+    pirateTimeAccum++;
+    checkPirateSpawnTrigger();
+  }
+
   // Rising mode: update speed based on time + level
   if (gameMode === 'rising' && isPlaying && !isPaused) {
     updateRisingSpeed();
@@ -791,13 +870,18 @@ function gameLoop(timestamp) {
     }
   }
 
+  // Pirate mode: update ship
+  if (gameMode === 'pirate' && frameDelta > 0 && frameDelta < 500) {
+    updatePirateShip(frameDelta);
+  }
+
   drawBoard();
   animFrame = requestAnimationFrame(gameLoop);
 }
 
 // ─── GAME CONTROLS ───
 function startGame(mode) {
-  gameMode = mode || 'classic';
+  gameMode = mode || 'pirate';
   switchScreen('game-screen');
   initCanvases();
   createBoard();
@@ -819,6 +903,24 @@ function startGame(mode) {
   gemBonusPopup = null;
   totalGemsCollected = 0;
   resetGemCounters();
+
+  // Pirate mode init
+  pirateScoreAccum = 0;
+  pirateTimeAccum = 0;
+  pirateShipActive = false;
+  pirateWarning = false;
+  pirateLaserActive = false;
+  pirateCounterLaser = false;
+  pirateGaugeValue = 0;
+  pirateGaugeVisible = false;
+  pirateShipDying = false;
+  pirateSmokeParticles = [];
+  pirateScorePopups = [];
+  pirateShipAttackCount = 0;
+  pirateTotalStolen = 0;
+  pirateShipState = 'idle';
+  const piratePanel = document.getElementById('pirate-gauge-panel');
+  if (piratePanel) piratePanel.style.display = 'none';
 
   // Rising mode init
   risingAccumulator = 0;
@@ -875,7 +977,7 @@ function togglePause() {
   } else {
     timerInterval = setInterval(updateTimer, 1000);
     lastDrop = 0;
-    lastFrameTime = 0; // reset frame timer so rising doesn't jump
+    lastFrameTime = 0; // reset frame timer so rising/pirate doesn't jump
   }
 }
 
@@ -897,8 +999,11 @@ function gameOver() {
 
   document.getElementById('gameover-overlay').classList.remove('hidden');
 
+  // Clean up pirate state
+  if (gameMode === 'pirate') endPirateShip();
+
   // Show mode info in game over
-  const modeTag = gameMode === 'rising' ? ' (라이징)' : '';
+  const modeTag = gameMode === 'rising' ? ' (라이징)' : gameMode === 'pirate' ? ' (파이렛)' : '';
   const goTitle = document.querySelector('#gameover-overlay h2');
   if (goTitle) goTitle.textContent = '게임 오버' + modeTag;
 }
@@ -922,6 +1027,7 @@ function backToMenu() {
   isPaused = false;
   clearInterval(timerInterval);
   if (animFrame) cancelAnimationFrame(animFrame);
+  if (gameMode === 'pirate') endPirateShip();
   showMenu();
 }
 
@@ -1051,6 +1157,488 @@ document.addEventListener('keyup', (e) => {
     moveRepeatTimer = null;
   }
 });
+
+// ─── PIRATE MODE SYSTEM ───
+
+function resetPirateTriggers() {
+  pirateScoreAccum = 0;
+  pirateTimeAccum = 0;
+}
+
+function checkPirateSpawnTrigger() {
+  if (gameMode !== 'pirate' || pirateShipActive || pirateWarning) return;
+  if (pirateScoreAccum >= PIRATE_SCORE_TRIGGER || pirateTimeAccum >= PIRATE_TIME_TRIGGER) {
+    startPirateWarning();
+    resetPirateTriggers();
+  }
+}
+
+function startPirateWarning() {
+  pirateWarning = true;
+  pirateWarningStart = performance.now();
+}
+
+function spawnPirateShip() {
+  pirateShipActive = true;
+  pirateWarning = false;
+  pirateShipAttackCount = 0;
+  pirateTotalStolen = 0;
+  pirateAttackTimer = 0;
+  pirateShipState = 'entering';
+  pirateShipX = canvas.width + 80;
+  pirateShipY = -40;
+  pirateShipTargetX = canvas.width / 2 - 30;
+  pirateShipTargetY = 20;
+  pirateLaserActive = false;
+  pirateGaugeValue = 0;
+  pirateGaugeVisible = true;
+  pirateShipDying = false;
+  pirateShipAngle = 0;
+  pirateSmokeParticles = [];
+
+  // Show gauge panel
+  const panel = document.getElementById('pirate-gauge-panel');
+  if (panel) panel.style.display = 'block';
+  updatePirateGaugeUI();
+}
+
+function updatePirateShip(frameDelta) {
+  if (gameMode !== 'pirate') return;
+
+  // Warning phase
+  if (pirateWarning && !pirateShipActive) {
+    const elapsed = performance.now() - pirateWarningStart;
+    if (elapsed >= PIRATE_WARN_DURATION) {
+      spawnPirateShip();
+    }
+    return;
+  }
+
+  if (!pirateShipActive) return;
+
+  // Ship entering
+  if (pirateShipState === 'entering') {
+    pirateShipX += (pirateShipTargetX - pirateShipX) * 0.05;
+    pirateShipY += (pirateShipTargetY - pirateShipY) * 0.05;
+    if (Math.abs(pirateShipX - pirateShipTargetX) < 2 && Math.abs(pirateShipY - pirateShipTargetY) < 2) {
+      pirateShipX = pirateShipTargetX;
+      pirateShipY = pirateShipTargetY;
+      pirateShipState = 'idle';
+      pirateAttackTimer = 0;
+    }
+    return;
+  }
+
+  // Death animation
+  if (pirateShipState === 'dying') {
+    const elapsed = performance.now() - pirateShipDyingStart;
+    pirateShipAngle = Math.sin(elapsed / 80) * (0.1 + elapsed / 5000);
+    pirateShipY += 0.3;
+    pirateShipX += Math.sin(elapsed / 200) * 2;
+
+    // Add smoke particles
+    if (Math.random() < 0.4) {
+      pirateSmokeParticles.push({
+        x: pirateShipX + 20 + Math.random() * 30,
+        y: pirateShipY + 10 + Math.random() * 20,
+        vx: (Math.random() - 0.5) * 2,
+        vy: -1 - Math.random() * 2,
+        life: 1.0,
+        size: 4 + Math.random() * 8,
+      });
+    }
+
+    // Update smoke
+    pirateSmokeParticles.forEach(p => {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life -= 0.02;
+      p.size += 0.3;
+    });
+    pirateSmokeParticles = pirateSmokeParticles.filter(p => p.life > 0);
+
+    if (elapsed > 2500) {
+      // Ship disappears — recover half stolen score
+      const recovered = Math.floor(pirateTotalStolen / 2);
+      score += recovered;
+      if (recovered > 0) {
+        pirateScorePopups.push({
+          text: `+${recovered} 회복!`,
+          x: canvas.width / 2,
+          y: canvas.height / 3,
+          time: performance.now(),
+          color: '#3bff6e',
+        });
+      }
+      updateUI();
+      endPirateShip();
+    }
+    return;
+  }
+
+  // Counter laser animation
+  if (pirateShipState === 'counter') {
+    const elapsed = performance.now() - pirateCounterStart;
+    if (elapsed > 1200) {
+      pirateShipState = 'dying';
+      pirateShipDyingStart = performance.now();
+      pirateCounterLaser = false;
+    }
+    return;
+  }
+
+  // Leaving
+  if (pirateShipState === 'leaving') {
+    pirateShipX += 4;
+    pirateShipY -= 2;
+    if (pirateShipX > canvas.width + 120) {
+      endPirateShip();
+    }
+    return;
+  }
+
+  // Idle / waiting to attack
+  if (pirateShipState === 'idle') {
+    pirateAttackTimer += frameDelta;
+    // Gentle hovering
+    pirateShipY = pirateShipTargetY + Math.sin(performance.now() / 800) * 4;
+
+    if (pirateAttackTimer >= PIRATE_SHIP_ATTACK_INTERVAL) {
+      pirateAttackTimer = 0;
+      startPirateAttack();
+    }
+  }
+
+  // Attacking phase — ship moves to score area then fires laser
+  if (pirateShipState === 'attacking') {
+    // Ship moves toward score panel area (upper left of canvas)
+    const attackX = 10;
+    const attackY = 15;
+    pirateShipX += (attackX - pirateShipX) * 0.06;
+    pirateShipY += (attackY - pirateShipY) * 0.06;
+
+    if (Math.abs(pirateShipX - attackX) < 5 && Math.abs(pirateShipY - attackY) < 5) {
+      pirateShipState = 'stealing';
+      pirateLaserActive = true;
+      pirateLaserStart = performance.now();
+    }
+  }
+
+  // Stealing phase — laser on score
+  if (pirateShipState === 'stealing') {
+    const elapsed = performance.now() - pirateLaserStart;
+    if (elapsed >= PIRATE_LASER_DURATION) {
+      // Steal score!
+      const stolen = Math.min(score, PIRATE_SCORE_STEAL);
+      score -= stolen;
+      pirateTotalStolen += stolen;
+      pirateShipAttackCount++;
+
+      pirateScorePopups.push({
+        text: `-${stolen}`,
+        x: 60,
+        y: 40,
+        time: performance.now(),
+        color: '#ff3b3b',
+      });
+
+      updateUI();
+      pirateLaserActive = false;
+
+      if (pirateShipAttackCount >= PIRATE_MAX_ATTACKS) {
+        pirateShipState = 'leaving';
+      } else {
+        // Return to center idle position
+        pirateShipState = 'returning';
+      }
+    }
+  }
+
+  // Returning to center after attack
+  if (pirateShipState === 'returning') {
+    pirateShipX += (pirateShipTargetX - pirateShipX) * 0.06;
+    pirateShipY += (pirateShipTargetY - pirateShipY) * 0.06;
+    if (Math.abs(pirateShipX - pirateShipTargetX) < 3) {
+      pirateShipState = 'idle';
+      pirateAttackTimer = 0;
+    }
+  }
+}
+
+function startPirateAttack() {
+  pirateShipState = 'attacking';
+}
+
+function firePirateCounterLaser() {
+  if (!pirateShipActive || pirateShipState === 'dying' || pirateShipState === 'leaving' || pirateShipState === 'counter') return;
+  pirateShipState = 'counter';
+  pirateCounterLaser = true;
+  pirateCounterStart = performance.now();
+  pirateLaserActive = false; // cancel any ship laser
+  pirateGaugeValue = 0;
+  updatePirateGaugeUI();
+}
+
+function endPirateShip() {
+  pirateShipActive = false;
+  pirateWarning = false;
+  pirateShipState = 'idle';
+  pirateLaserActive = false;
+  pirateCounterLaser = false;
+  pirateGaugeVisible = false;
+  pirateGaugeValue = 0;
+  pirateSmokeParticles = [];
+
+  const panel = document.getElementById('pirate-gauge-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+function addPirateGaugeEnergy(points) {
+  if (!pirateGaugeVisible || !pirateShipActive) return false; // not diverting
+  pirateGaugeValue = Math.min(PIRATE_GAUGE_MAX, pirateGaugeValue + points);
+  updatePirateGaugeUI();
+  if (pirateGaugeValue >= PIRATE_GAUGE_MAX) {
+    firePirateCounterLaser();
+  }
+  return true; // energy was diverted instead of scoring
+}
+
+function updatePirateGaugeUI() {
+  const bar = document.getElementById('pirate-gauge-bar');
+  const wrap = document.querySelector('.pirate-gauge-wrap');
+  const hint = document.getElementById('pirate-gauge-hint');
+  if (!bar) return;
+  const pct = Math.min(100, (pirateGaugeValue / PIRATE_GAUGE_MAX) * 100);
+  bar.style.width = pct + '%';
+  if (wrap) {
+    wrap.classList.toggle('active', pct > 20);
+  }
+  if (hint) {
+    if (pct >= 100) {
+      hint.textContent = '발사 준비 완료!';
+    } else {
+      hint.textContent = `${Math.floor(pct)}% 충전 중...`;
+    }
+  }
+}
+
+// ─── PIRATE SHIP RENDERER ───
+function drawPirateShip(ctx) {
+  if (!pirateShipActive && !pirateWarning) return;
+
+  ctx.save();
+
+  // WARNING phase — flash text
+  if (pirateWarning && !pirateShipActive) {
+    const elapsed = performance.now() - pirateWarningStart;
+    const alpha = 0.5 + 0.5 * Math.sin(elapsed / 150);
+    
+    // Red screen flash
+    ctx.fillStyle = `rgba(255, 0, 0, ${alpha * 0.08})`;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.font = 'bold 32px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = `rgba(255, 50, 50, ${alpha})`;
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 20;
+    ctx.fillText('⚠ WARNING!', canvas.width / 2, canvas.height / 2 - 20);
+    ctx.font = '12px "Noto Sans KR", sans-serif';
+    ctx.fillStyle = `rgba(255, 150, 150, ${alpha * 0.8})`;
+    ctx.shadowBlur = 0;
+    ctx.fillText('해적 우주선 접근 중...', canvas.width / 2, canvas.height / 2 + 15);
+    ctx.restore();
+    return;
+  }
+
+  // Apply death wobble
+  if (pirateShipState === 'dying') {
+    ctx.translate(pirateShipX + 30, pirateShipY + 15);
+    ctx.rotate(pirateShipAngle);
+    ctx.translate(-(pirateShipX + 30), -(pirateShipY + 15));
+  }
+
+  const sx = pirateShipX;
+  const sy = pirateShipY;
+
+  // ── Ship body (pirate spaceship) ──
+  // Main hull
+  ctx.fillStyle = '#2a1a3a';
+  ctx.beginPath();
+  ctx.moveTo(sx + 10, sy + 20);
+  ctx.lineTo(sx + 20, sy + 5);
+  ctx.lineTo(sx + 50, sy + 2);
+  ctx.lineTo(sx + 60, sy + 10);
+  ctx.lineTo(sx + 55, sy + 28);
+  ctx.lineTo(sx + 15, sy + 30);
+  ctx.closePath();
+  ctx.fill();
+
+  // Deck (pirate ship style)
+  ctx.fillStyle = '#4a2a5a';
+  ctx.beginPath();
+  ctx.moveTo(sx + 15, sy + 15);
+  ctx.lineTo(sx + 25, sy + 8);
+  ctx.lineTo(sx + 50, sy + 6);
+  ctx.lineTo(sx + 55, sy + 15);
+  ctx.lineTo(sx + 50, sy + 22);
+  ctx.lineTo(sx + 18, sy + 24);
+  ctx.closePath();
+  ctx.fill();
+
+  // Skull emblem
+  ctx.fillStyle = '#fff';
+  ctx.font = '14px serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('☠', sx + 35, sy + 20);
+
+  // Engine glow
+  ctx.fillStyle = 'rgba(180, 50, 255, 0.6)';
+  ctx.shadowColor = '#b83bff';
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.ellipse(sx + 10, sy + 25, 5, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Mast / antenna
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(sx + 35, sy + 5);
+  ctx.lineTo(sx + 35, sy - 10);
+  ctx.stroke();
+
+  // Pirate flag
+  ctx.fillStyle = '#111';
+  ctx.fillRect(sx + 35, sy - 10, 12, 8);
+  ctx.fillStyle = '#fff';
+  ctx.font = '5px serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('☠', sx + 41, sy - 4);
+
+  // Ship cannon (pointing down-left toward score)
+  if (pirateShipState === 'attacking' || pirateShipState === 'stealing') {
+    ctx.strokeStyle = '#ff3b3b';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(sx + 20, sy + 28);
+    ctx.lineTo(sx + 10, sy + 38);
+    ctx.stroke();
+  }
+
+  // ── Ship's laser beam ──
+  if (pirateLaserActive) {
+    const elapsed = performance.now() - pirateLaserStart;
+    const laserAlpha = 0.5 + 0.5 * Math.sin(elapsed / 100);
+    const progress = Math.min(1, elapsed / PIRATE_LASER_DURATION);
+    
+    // Laser from ship to score area
+    const laserStartX = sx + 15;
+    const laserStartY = sy + 35;
+    const laserEndX = 0;
+    const laserEndY = 0;
+
+    // Wide red beam
+    ctx.strokeStyle = `rgba(255, 50, 50, ${laserAlpha * 0.8})`;
+    ctx.lineWidth = 4;
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 15;
+    ctx.beginPath();
+    ctx.moveTo(laserStartX, laserStartY);
+    ctx.lineTo(laserEndX, laserEndY);
+    ctx.stroke();
+
+    // Inner bright core
+    ctx.strokeStyle = `rgba(255, 200, 200, ${laserAlpha})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(laserStartX, laserStartY);
+    ctx.lineTo(laserEndX, laserEndY);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Score drain indicator (progress bar on top of canvas)
+    ctx.fillStyle = `rgba(255, 0, 0, ${0.3 + laserAlpha * 0.2})`;
+    ctx.fillRect(0, 0, canvas.width * progress, 3);
+  }
+
+  // ── Counter laser (from bottom-center to ship) ──
+  if (pirateCounterLaser) {
+    const elapsed = performance.now() - pirateCounterStart;
+    const laserAlpha = 0.6 + 0.4 * Math.sin(elapsed / 60);
+
+    const startX = canvas.width / 2;
+    const startY = canvas.height;
+    const endX = sx + 35;
+    const endY = sy + 15;
+
+    // Orange-red counter beam
+    ctx.strokeStyle = `rgba(255, 140, 0, ${laserAlpha})`;
+    ctx.lineWidth = 6;
+    ctx.shadowColor = '#ff8c00';
+    ctx.shadowBlur = 25;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+
+    // Bright core
+    ctx.strokeStyle = `rgba(255, 255, 200, ${laserAlpha})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Impact flash at ship
+    ctx.fillStyle = `rgba(255, 200, 50, ${laserAlpha * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(endX, endY, 15 + Math.sin(elapsed / 50) * 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ── Smoke particles (dying) ──
+  pirateSmokeParticles.forEach(p => {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = `rgba(100, 100, 100, ${p.life * 0.8})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+    // Fire particle
+    if (p.life > 0.5) {
+      ctx.fillStyle = `rgba(255, 100, 0, ${(p.life - 0.5) * 1.5})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1;
+
+  ctx.restore();
+
+  // ── Score popups ──
+  pirateScorePopups.forEach(popup => {
+    const elapsed = performance.now() - popup.time;
+    const dur = 1500;
+    if (elapsed < dur) {
+      const prog = elapsed / dur;
+      const alpha = 1 - prog;
+      const yOff = -prog * 50;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = 'bold 18px "Press Start 2P", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = popup.color;
+      ctx.shadowColor = popup.color;
+      ctx.shadowBlur = 10;
+      ctx.fillText(popup.text, popup.x, popup.y + yOff);
+      ctx.restore();
+    }
+  });
+  pirateScorePopups = pirateScorePopups.filter(p => performance.now() - p.time < 1500);
+}
 
 // ─── RISING MODE SYSTEM ───
 
