@@ -125,8 +125,8 @@ let gemBonusPopup = null;     // {text, x, y, time} for "x10" popup animation
 let totalGemsCollected = 0;   // lifetime gems cleared this game
 
 // ─── RISING MODE STATE ───
-const RISING_INITIAL_SPEED = 5.0; // seconds
-const RISING_FINAL_SPEED = 2.0;   // seconds
+const RISING_INITIAL_SPEED = 5.0; // seconds per row
+const RISING_FINAL_SPEED = 2.0;   // seconds per row
 const RISING_MAX_LEVEL = 10;      // level cap for speed calc
 const RISING_MAX_TIME = 120;      // seconds cap for speed calc
 const RISING_CHUNK_COLORS = [1, 2, 3, 4, 5, 6, 7]; // color ids for chunks
@@ -136,6 +136,9 @@ let risingLastGaps = [];          // gap columns of last row (for consecutive ga
 let risingConsecutiveGap = {};    // col -> count of consecutive gaps
 let risingFlashTime = 0;          // timestamp for bottom-row flash
 let risingRowsPushed = 0;         // total rows pushed up this game
+let risingSlideOffset = 0;        // px offset for smooth slide-up (0 → CELL)
+let risingPendingRow = null;      // pre-generated next row waiting to slide in
+let risingPendingGemRow = null;   // gem data for pending row
 
 // ─── PIRATE MODE STATE ───
 const PIRATE_SCORE_TRIGGER = 1000;   // points threshold for spaceship spawn
@@ -656,14 +659,42 @@ function drawBoard() {
     ctx.stroke();
   }
 
-  // Locked cells
+  // Rising mode: compute vertical slide offset
+  const slideY = (gameMode === 'rising') ? risingSlideOffset : 0;
+
+  // Clip to board area so sliding cells don't overflow
+  if (slideY > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, canvas.width, canvas.height);
+    ctx.clip();
+  }
+
+  // Locked cells (shifted up by slideY in rising mode)
   for (let r = HIDDEN_ROWS; r < TOTAL_ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       if (board[r][c]) {
         const vr = r - HIDDEN_ROWS;
-        drawCell(ctx, c * CELL, vr * CELL, CELL, board[r][c], false, gemBoard[r][c]);
+        const drawY = vr * CELL - slideY;
+        if (drawY > -CELL && drawY < canvas.height) {
+          drawCell(ctx, c * CELL, drawY, CELL, board[r][c], false, gemBoard[r][c]);
+        }
       }
     }
+  }
+
+  // Rising mode: draw the pending row sliding up from below
+  if (gameMode === 'rising' && risingPendingRow && slideY > 0) {
+    for (let c = 0; c < COLS; c++) {
+      if (risingPendingRow[c]) {
+        const drawY = ROWS * CELL - slideY;
+        drawCell(ctx, c * CELL, drawY, CELL, risingPendingRow[c], false, false);
+      }
+    }
+  }
+
+  if (slideY > 0) {
+    ctx.restore();
   }
 
   // Line clear flash (golden if gem, white otherwise)
@@ -677,7 +708,7 @@ function drawBoard() {
     }
     lineFlashRows.forEach(r => {
       const vr = r - HIDDEN_ROWS;
-      ctx.fillRect(0, vr * CELL, canvas.width, CELL);
+      ctx.fillRect(0, vr * CELL - slideY, canvas.width, CELL);
     });
   }
 
@@ -697,28 +728,42 @@ function drawBoard() {
     if (elapsed < 300) {
       const alpha = Math.max(0, 1 - elapsed / 300) * 0.5;
       ctx.fillStyle = `rgba(255, 100, 50, ${alpha})`;
-      ctx.fillRect(0, (ROWS - 1) * CELL, canvas.width, CELL);
+      ctx.fillRect(0, (ROWS - 1) * CELL - slideY, canvas.width, CELL);
     }
   }
 
-  // Rising mode: draw a subtle warning line showing rising progress
+  // Rising mode: draw a rising progress glow at the bottom edge
+  if (gameMode === 'rising' && slideY > 0) {
+    // Glowing line at the exact emerging point
+    const glowAlpha = Math.min(0.4, slideY / CELL * 0.5);
+    ctx.fillStyle = `rgba(255, 80, 30, ${glowAlpha})`;
+    ctx.fillRect(0, canvas.height - 2, canvas.width, 2);
+    // Subtle gradient glow rising from bottom
+    const grad = ctx.createLinearGradient(0, canvas.height - CELL, 0, canvas.height);
+    grad.addColorStop(0, 'rgba(255, 80, 30, 0)');
+    grad.addColorStop(1, `rgba(255, 80, 30, ${glowAlpha * 0.5})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, canvas.height - CELL, canvas.width, CELL);
+  }
+
+  // Rising mode: badge + speed indicator
   if (gameMode === 'rising') {
-    const pct = risingAccumulator / (risingSpeed * 1000);
-    if (pct > 0.3) {
-      const warningAlpha = Math.min(0.15, pct * 0.2);
-      ctx.fillStyle = `rgba(255, 80, 30, ${warningAlpha})`;
-      ctx.fillRect(0, (ROWS - 1) * CELL, canvas.width, CELL);
-    }
-    // Mode badge
     ctx.save();
     ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillStyle = 'rgba(255, 100, 50, 0.4)';
     ctx.textAlign = 'right';
     ctx.fillText('RISING', canvas.width - 6, 14);
+    // Show speed as visual urgency indicator
+    if (risingSpeed <= 3.0) {
+      const urgency = (3.0 - risingSpeed) / 1.0; // 0..1 as speed 3→2
+      const pulseAlpha = 0.05 + urgency * 0.05 * Math.abs(Math.sin(performance.now() / 300));
+      ctx.fillStyle = `rgba(255, 50, 20, ${pulseAlpha})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.restore();
   }
 
-  // Ghost piece
+  // Ghost piece (shifted by slideY in rising mode)
   if (currentPiece) {
     const ghostRow = getGhostRow();
     if (ghostRow !== currentPiece.row) {
@@ -727,20 +772,22 @@ function drawBoard() {
         const vr = ghostRow + dr - HIDDEN_ROWS;
         const vc = currentPiece.col + dc;
         const isGemCell = currentPiece.hasGem && idx === currentPiece.gemCellIndex;
-        if (vr >= 0 && vr < ROWS) {
-          drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, true, isGemCell);
+        const py = vr * CELL - slideY;
+        if (py > -CELL && py < canvas.height) {
+          drawCell(ctx, vc * CELL, py, CELL, currentPiece.id, true, isGemCell);
         }
       });
     }
 
-    // Current piece
+    // Current piece (shifted by slideY in rising mode)
     const pcells = getPieceCells(currentPiece);
     pcells.forEach(([dr, dc], idx) => {
       const vr = currentPiece.row + dr - HIDDEN_ROWS;
       const vc = currentPiece.col + dc;
       const isGemCell = currentPiece.hasGem && idx === currentPiece.gemCellIndex;
-      if (vr >= 0 && vr < ROWS) {
-        drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, false, isGemCell);
+      const py = vr * CELL - slideY;
+      if (py > -CELL && py < canvas.height) {
+        drawCell(ctx, vc * CELL, py, CELL, currentPiece.id, false, isGemCell);
       }
     });
   }
@@ -872,15 +919,23 @@ function gameLoop(timestamp) {
     lockDelay = 0;
   }
 
-  // Rising mode: accumulate time and push rows
+  // Rising mode: smooth slide-up
   if (gameMode === 'rising' && frameDelta > 0 && frameDelta < 500) {
-    risingAccumulator += frameDelta;
-    const intervalMs = risingSpeed * 1000;
-    // Update progress bar
+    // Ensure pending row exists
+    if (!risingPendingRow) {
+      risingPendingRow = generateRisingRow();
+      risingPendingGemRow = Array(COLS).fill(false);
+    }
+    // Calculate slide speed: CELL pixels per risingSpeed seconds
+    const pxPerMs = CELL / (risingSpeed * 1000);
+    risingSlideOffset += pxPerMs * frameDelta;
+    // Update progress bar based on slide offset
+    risingAccumulator = risingSlideOffset; // sync for UI
     updateRisingProgressBar();
-    while (risingAccumulator >= intervalMs) {
-      risingAccumulator -= intervalMs;
-      pushRisingRow();
+    // When offset reaches a full cell, commit the row shift
+    while (risingSlideOffset >= CELL) {
+      risingSlideOffset -= CELL;
+      commitRisingRow();
     }
   }
 
@@ -945,6 +1000,9 @@ function startGame(mode) {
   risingConsecutiveGap = {};
   risingFlashTime = 0;
   risingRowsPushed = 0;
+  risingSlideOffset = 0;
+  risingPendingRow = null;
+  risingPendingGemRow = null;
 
   // Show/hide rising panel
   const risingPanel = document.getElementById('rising-panel');
@@ -1691,15 +1749,16 @@ function updateRisingUI() {
   if (el) el.textContent = risingSpeed.toFixed(1) + '초';
   const hint = document.getElementById('rising-hint');
   if (hint) {
-    const remaining = Math.max(0, risingSpeed * 1000 - risingAccumulator);
-    hint.textContent = `다음 줄까지 ${(remaining / 1000).toFixed(1)}초`;
+    const remainingPx = Math.max(0, CELL - risingSlideOffset);
+    const remainingMs = remainingPx / (CELL / (risingSpeed * 1000));
+    hint.textContent = `다음 줄까지 ${(remainingMs / 1000).toFixed(1)}초`;
   }
 }
 
 function updateRisingProgressBar() {
   const bar = document.getElementById('rising-bar');
   if (!bar) return;
-  const pct = Math.min(100, (risingAccumulator / (risingSpeed * 1000)) * 100);
+  const pct = Math.min(100, (risingSlideOffset / CELL) * 100);
   bar.style.width = pct + '%';
   // Color: green -> yellow -> red
   if (pct < 50) bar.style.background = 'var(--green)';
@@ -1708,20 +1767,16 @@ function updateRisingProgressBar() {
 }
 
 /**
- * Generate one rising row and push the entire board up by 1.
- * Row structure: 2 or 3 "chunks" of solid blocks with 1-3 gaps.
- * Gap constraint: a gap column can only repeat directly below itself
- * at most 2 consecutive times.
+ * Commit the pending rising row into the board (called when slide offset reaches CELL).
+ * Uses the pre-generated risingPendingRow.
  */
-function pushRisingRow() {
+function commitRisingRow() {
   if (!isPlaying || isPaused) return;
 
-  // 1) Generate the new row
-  const newRow = generateRisingRow();
-  const newGemRow = Array(COLS).fill(false);
+  const newRow = risingPendingRow || generateRisingRow();
+  const newGemRow = risingPendingGemRow || Array(COLS).fill(false);
 
-  // 2) Check if pushing up would cause game over
-  //    (top hidden row has blocks that would go above the board)
+  // Check if pushing up would cause game over
   for (let c = 0; c < COLS; c++) {
     if (board[0][c] !== 0) {
       gameOver();
@@ -1729,23 +1784,19 @@ function pushRisingRow() {
     }
   }
 
-  // 3) Push board up: remove top row, add new row at bottom
+  // Push board up: remove top row, add new row at bottom
   board.shift();
   board.push(newRow);
   gemBoard.shift();
   gemBoard.push(newGemRow);
 
-  // 4) Move current piece up by 1 (it stays in same visual position
-  //    relative to the board which just shifted down)
+  // Move current piece up by 1
   if (currentPiece) {
     currentPiece.row--;
-    // If piece now collides, push it up more or game over
     if (currentPiece.row < 0) {
-      // Try to keep piece in bounds
       currentPiece.row = 0;
     }
     if (!isValid(currentPiece, 0, 0)) {
-      // Try pushing piece up
       for (let nudge = -1; nudge >= -3; nudge--) {
         const test = { ...currentPiece, row: currentPiece.row + nudge };
         if (test.row >= 0 && isValid(test, 0, 0)) {
@@ -1753,7 +1804,6 @@ function pushRisingRow() {
           break;
         }
       }
-      // If still invalid, game over
       if (!isValid(currentPiece, 0, 0)) {
         gameOver();
         return;
@@ -1763,6 +1813,10 @@ function pushRisingRow() {
 
   risingRowsPushed++;
   risingFlashTime = performance.now();
+
+  // Prepare next pending row
+  risingPendingRow = generateRisingRow();
+  risingPendingGemRow = Array(COLS).fill(false);
 
   // Bonus points for surviving
   score += 5 * level;
