@@ -2,6 +2,202 @@
    TETRIS – Full Game Engine
    ================================================================ */
 
+// ─── AUDIO SYSTEM ───
+const AudioManager = {
+  // Volume settings (0-100)
+  bgmVolume: 50,
+  sfxVolume: 50,
+
+  // Audio pools for SFX (allows overlapping plays)
+  sfxBuffers: {},
+  bgmCurrent: null,       // currently playing default BGM
+  bgmPirate: null,        // currently playing pirate BGM
+  bgmFadeInterval: null,
+  bgmPirateFadeInterval: null,
+
+  // Preload all sound files
+  init() {
+    // Load saved volume from localStorage
+    const savedBgm = localStorage.getItem('tetris_bgmVolume');
+    const savedSfx = localStorage.getItem('tetris_sfxVolume');
+    if (savedBgm !== null) this.bgmVolume = parseInt(savedBgm);
+    if (savedSfx !== null) this.sfxVolume = parseInt(savedSfx);
+
+    // Preload SFX
+    this.preloadSFX('levelup', 'sounds/levelup.mp3');
+    this.preloadSFX('tile_put_on', 'sounds/tile_put_on.mp3');
+    this.preloadSFX('button_click', 'sounds/button_click.mp3');
+    this.preloadSFX('line_destroy', 'sounds/line_destroy.mp3');
+    this.preloadSFX('warning', 'sounds/warning.mp3');
+
+    // Pre-create BGM audio elements
+    this.defaultBgm1 = new Audio('sounds/default_bgm1.mp3');
+    this.defaultBgm1.loop = true;
+    this.defaultBgm2 = new Audio('sounds/default_bgm2.mp3');
+    this.defaultBgm2.loop = true;
+    this.pirateBgm1 = new Audio('sounds/pirate_bgm1.mp3');
+    this.pirateBgm1.loop = true;
+    this.pirateBgm2 = new Audio('sounds/pirate_bgm2.mp3');
+    this.pirateBgm2.loop = true;
+  },
+
+  preloadSFX(name, src) {
+    // Create a pool of 4 audio elements per SFX for overlapping
+    this.sfxBuffers[name] = [];
+    for (let i = 0; i < 4; i++) {
+      const audio = new Audio(src);
+      audio.preload = 'auto';
+      this.sfxBuffers[name].push(audio);
+    }
+  },
+
+  // Play a sound effect
+  playSFX(name) {
+    if (this.sfxVolume <= 0) return;
+    const pool = this.sfxBuffers[name];
+    if (!pool) return;
+    // Find an available (not playing) audio element
+    let audio = pool.find(a => a.paused || a.ended);
+    if (!audio) {
+      audio = pool[0]; // reuse first if all busy
+      audio.currentTime = 0;
+    }
+    audio.volume = this.sfxVolume / 100;
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  },
+
+  // Start default background music (random 1 or 2)
+  startDefaultBGM() {
+    this.stopAllBGM();
+    const pick = Math.random() < 0.5 ? this.defaultBgm1 : this.defaultBgm2;
+    pick.volume = this.bgmVolume / 100;
+    pick.currentTime = 0;
+    pick.play().catch(() => {});
+    this.bgmCurrent = pick;
+  },
+
+  // Start pirate BGM with crossfade from default
+  startPirateBGM() {
+    // Pick random pirate bgm
+    const pick = Math.random() < 0.5 ? this.pirateBgm1 : this.pirateBgm2;
+    pick.volume = 0;
+    pick.currentTime = 0;
+    pick.play().catch(() => {});
+    this.bgmPirate = pick;
+
+    // Fade out default BGM over 3 seconds
+    if (this.bgmCurrent) {
+      this._fadeOut(this.bgmCurrent, 3000, 'bgmFadeInterval');
+    }
+    // Fade in pirate BGM over 1 second
+    this._fadeIn(pick, 1000, 'bgmPirateFadeInterval');
+  },
+
+  // Stop pirate BGM (fade out over 5 seconds) and resume default BGM
+  stopPirateBGM() {
+    if (this.bgmPirate) {
+      this._fadeOut(this.bgmPirate, 5000, 'bgmPirateFadeInterval');
+      this.bgmPirate = null;
+    }
+    // Fade default BGM back in
+    if (this.bgmCurrent) {
+      this._fadeIn(this.bgmCurrent, 2000, 'bgmFadeInterval');
+    }
+  },
+
+  // Stop all BGM immediately
+  stopAllBGM() {
+    clearInterval(this.bgmFadeInterval);
+    clearInterval(this.bgmPirateFadeInterval);
+    [this.defaultBgm1, this.defaultBgm2, this.pirateBgm1, this.pirateBgm2].forEach(a => {
+      a.pause();
+      a.currentTime = 0;
+    });
+    this.bgmCurrent = null;
+    this.bgmPirate = null;
+  },
+
+  // Pause all BGM (for game pause)
+  pauseAllBGM() {
+    if (this.bgmCurrent && !this.bgmCurrent.paused) this.bgmCurrent.pause();
+    if (this.bgmPirate && !this.bgmPirate.paused) this.bgmPirate.pause();
+  },
+
+  // Resume BGM (for game unpause)
+  resumeAllBGM() {
+    if (this.bgmCurrent && this.bgmCurrent.currentTime > 0) {
+      this.bgmCurrent.play().catch(() => {});
+    }
+    if (this.bgmPirate && this.bgmPirate.currentTime > 0) {
+      this.bgmPirate.play().catch(() => {});
+    }
+  },
+
+  // Set BGM volume (0-100)
+  setBgmVolume(val) {
+    this.bgmVolume = val;
+    localStorage.setItem('tetris_bgmVolume', val);
+    // Apply to currently playing BGM
+    if (this.bgmCurrent && !this.bgmCurrent.paused) {
+      this.bgmCurrent.volume = val / 100;
+    }
+    if (this.bgmPirate && !this.bgmPirate.paused) {
+      this.bgmPirate.volume = val / 100;
+    }
+  },
+
+  // Set SFX volume (0-100)
+  setSfxVolume(val) {
+    this.sfxVolume = val;
+    localStorage.setItem('tetris_sfxVolume', val);
+  },
+
+  // Internal fade helpers
+  _fadeOut(audio, durationMs, intervalKey) {
+    clearInterval(this[intervalKey]);
+    const startVol = audio.volume;
+    const steps = 30;
+    const stepTime = durationMs / steps;
+    const volStep = startVol / steps;
+    let current = startVol;
+    this[intervalKey] = setInterval(() => {
+      current -= volStep;
+      if (current <= 0) {
+        current = 0;
+        audio.volume = 0;
+        audio.pause();
+        clearInterval(this[intervalKey]);
+      } else {
+        audio.volume = current;
+      }
+    }, stepTime);
+  },
+
+  _fadeIn(audio, durationMs, intervalKey) {
+    clearInterval(this[intervalKey]);
+    const targetVol = this.bgmVolume / 100;
+    const steps = 30;
+    const stepTime = durationMs / steps;
+    const volStep = targetVol / steps;
+    let current = audio.volume || 0;
+    if (audio.paused) {
+      audio.volume = 0;
+      audio.play().catch(() => {});
+    }
+    this[intervalKey] = setInterval(() => {
+      current += volStep;
+      if (current >= targetVol) {
+        current = targetVol;
+        audio.volume = current;
+        clearInterval(this[intervalKey]);
+      } else {
+        audio.volume = current;
+      }
+    }, stepTime);
+  },
+};
+
 // ─── CONSTANTS ───
 const COLS = 10;
 const ROWS = 20;
@@ -111,7 +307,9 @@ let dropSpeed = 800;
 let lastDrop = 0;
 let animFrame = null;
 let lockDelay = 0;
-let lockLimit = 500; // ms before lock
+let lockLimit = 2000; // ms before lock (2s for T-spin etc.)
+let lockMoveCount = 0;       // how many times lock delay was reset by move/rotate
+const LOCK_MOVE_LIMIT = 15;  // max resets allowed (standard guideline)
 let lineFlashRows = [];
 let lineFlashTime = 0;
 
@@ -315,6 +513,9 @@ function lockPiece() {
   });
   canHold = true;
 
+  // SFX: tile placed
+  AudioManager.playSFX('tile_put_on');
+
   // Count this block for gem system
   gemBlocksDropped++;
   checkGemTrigger();
@@ -332,6 +533,9 @@ function clearLines() {
     }
   }
   if (fullRows.length === 0) return;
+
+  // SFX: line destroy
+  AudioManager.playSFX('line_destroy');
 
   // Check if any cleared row contains a gem
   let hasGemInCleared = false;
@@ -392,8 +596,14 @@ function clearLines() {
       resetGemCounters();
     }
 
+    const oldLevel = level;
     level = Math.floor(lines / 10) + 1;
     dropSpeed = Math.max(80, 800 - (level - 1) * 60);
+
+    // SFX: level up
+    if (level > oldLevel) {
+      AudioManager.playSFX('levelup');
+    }
 
     updateUI();
   }, 200);
@@ -426,11 +636,22 @@ function spawnPiece() {
 }
 
 // ─── MOVEMENT ───
+function resetLockDelay() {
+  // Only reset if we haven't exceeded the move limit
+  if (lockMoveCount < LOCK_MOVE_LIMIT) {
+    lockDelay = 0;
+    lockMoveCount++;
+  }
+}
+
 function moveLeft() {
   if (!currentPiece || !isPlaying || isPaused) return;
   if (isValid(currentPiece, 0, -1)) {
     currentPiece.col--;
-    lockDelay = 0;
+    // Only reset lock delay if piece is on the ground
+    if (!isValid(currentPiece, 1, 0)) {
+      resetLockDelay();
+    }
   }
 }
 
@@ -438,7 +659,10 @@ function moveRight() {
   if (!currentPiece || !isPlaying || isPaused) return;
   if (isValid(currentPiece, 0, 1)) {
     currentPiece.col++;
-    lockDelay = 0;
+    // Only reset lock delay if piece is on the ground
+    if (!isValid(currentPiece, 1, 0)) {
+      resetLockDelay();
+    }
   }
 }
 
@@ -453,6 +677,8 @@ function moveDown() {
       score += 1; // soft drop bonus
       if (gameMode === 'pirate') { pirateScoreAccum += 1; }
     }
+    // When piece moves down, reset lock delay timer but NOT the move count
+    // (gravity/soft drop doesn't count toward move limit)
     lockDelay = 0;
     updateUI();
     return true;
@@ -490,7 +716,10 @@ function rotate() {
       currentPiece.row = testPiece.row;
       currentPiece.rotation = newRot;
       currentPiece.cells = getPieceCells(currentPiece, newRot);
-      lockDelay = 0;
+      // Only reset lock delay if piece is on the ground
+      if (!isValid(currentPiece, 1, 0)) {
+        resetLockDelay();
+      }
       return;
     }
   }
@@ -909,14 +1138,19 @@ function gameLoop(timestamp) {
     if (lockDelay >= lockLimit) {
       lockPiece();
       lockDelay = 0;
+      lockMoveCount = 0;
       lastDrop = timestamp;
     }
   } else if (delta >= dropSpeed) {
     if (currentPiece) {
       currentPiece.row++;
+      // If piece just landed on something, reset lock state for fresh 2s window
+      if (!isValid(currentPiece, 1, 0)) {
+        lockDelay = 0;
+        lockMoveCount = 0;
+      }
     }
     lastDrop = timestamp;
-    lockDelay = 0;
   }
 
   // Rising mode: smooth slide-up
@@ -963,6 +1197,7 @@ function startGame(mode) {
   heldPiece = null;
   canHold = true;
   lockDelay = 0;
+  lockMoveCount = 0;
   lastDrop = 0;
   lastFrameTime = 0;
   lineFlashRows = [];
@@ -1036,6 +1271,9 @@ function startGame(mode) {
 
   if (animFrame) cancelAnimationFrame(animFrame);
   animFrame = requestAnimationFrame(gameLoop);
+
+  // Start default background music
+  AudioManager.startDefaultBGM();
 }
 
 function updateModeLabel() {
@@ -1048,10 +1286,12 @@ function togglePause() {
   document.getElementById('pause-overlay').classList.toggle('hidden', !isPaused);
   if (isPaused) {
     clearInterval(timerInterval);
+    AudioManager.pauseAllBGM();
   } else {
     timerInterval = setInterval(updateTimer, 1000);
     lastDrop = 0;
     lastFrameTime = 0; // reset frame timer so rising/pirate doesn't jump
+    AudioManager.resumeAllBGM();
   }
 }
 
@@ -1063,6 +1303,7 @@ function gameOver() {
   isPlaying = false;
   isPaused = false;
   clearInterval(timerInterval);
+  AudioManager.stopAllBGM();
 
   document.getElementById('final-score').textContent = score.toLocaleString();
   document.getElementById('final-level').textContent = level;
@@ -1108,6 +1349,7 @@ function backToMenu() {
   clearInterval(timerInterval);
   if (animFrame) cancelAnimationFrame(animFrame);
   if (gameMode === 'pirate') endPirateShip();
+  AudioManager.stopAllBGM();
   showMenu();
 }
 
@@ -1122,6 +1364,7 @@ function showMenu() {
   isPaused = false;
   clearInterval(timerInterval);
   if (animFrame) cancelAnimationFrame(animFrame);
+  AudioManager.stopAllBGM();
   switchScreen('menu-screen');
 }
 
@@ -1256,6 +1499,10 @@ function checkPirateSpawnTrigger() {
 function startPirateWarning() {
   pirateWarning = true;
   pirateWarningStart = performance.now();
+
+  // SFX: warning sound + start pirate BGM
+  AudioManager.playSFX('warning');
+  AudioManager.startPirateBGM();
 }
 
 /**
@@ -1456,6 +1703,9 @@ function endPirateShip() {
 
   const panel = document.getElementById('pirate-gauge-panel');
   if (panel) panel.style.display = 'none';
+
+  // Fade out pirate BGM, resume default BGM
+  AudioManager.stopPirateBGM();
 }
 
 function addPirateGaugeEnergy(points) {
@@ -1928,5 +2178,54 @@ function createBgBlocks() {
   }
 }
 
+// ─── OPTIONS SCREEN ───
+function showOptions() {
+  AudioManager.playSFX('button_click');
+  switchScreen('options-screen');
+  // Sync sliders with current values
+  const bgmSlider = document.getElementById('bgm-slider');
+  const sfxSlider = document.getElementById('sfx-slider');
+  if (bgmSlider) {
+    bgmSlider.value = AudioManager.bgmVolume;
+    document.getElementById('bgm-value').textContent = AudioManager.bgmVolume;
+  }
+  if (sfxSlider) {
+    sfxSlider.value = AudioManager.sfxVolume;
+    document.getElementById('sfx-value').textContent = AudioManager.sfxVolume;
+  }
+}
+
+function onBgmVolumeChange(val) {
+  val = parseInt(val);
+  AudioManager.setBgmVolume(val);
+  document.getElementById('bgm-value').textContent = val;
+}
+
+function onSfxVolumeChange(val) {
+  val = parseInt(val);
+  AudioManager.setSfxVolume(val);
+  document.getElementById('sfx-value').textContent = val;
+}
+
+function onSfxSliderRelease() {
+  // Play a preview sound when user releases the SFX slider
+  AudioManager.playSFX('button_click');
+}
+
+// Wire button click sound to all menu buttons
+function initMenuButtonSounds() {
+  document.querySelectorAll('#menu-screen .btn, #options-screen .btn-back').forEach(btn => {
+    // Don't double-bind the options button (it plays in showOptions)
+    if (btn.classList.contains('btn-options')) return;
+    btn.addEventListener('click', () => {
+      AudioManager.playSFX('button_click');
+    });
+  });
+}
+
 // ─── INIT ───
+AudioManager.init();
 createBgBlocks();
+
+// Bind button sounds after DOM ready
+initMenuButtonSounds();
