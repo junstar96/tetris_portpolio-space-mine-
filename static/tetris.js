@@ -125,8 +125,8 @@ let gemBonusPopup = null;     // {text, x, y, time} for "x10" popup animation
 let totalGemsCollected = 0;   // lifetime gems cleared this game
 
 // ─── RISING MODE STATE ───
-const RISING_INITIAL_SPEED = 5.0; // seconds
-const RISING_FINAL_SPEED = 2.0;   // seconds
+const RISING_INITIAL_SPEED = 5.0; // seconds per row
+const RISING_FINAL_SPEED = 2.0;   // seconds per row
 const RISING_MAX_LEVEL = 10;      // level cap for speed calc
 const RISING_MAX_TIME = 120;      // seconds cap for speed calc
 const RISING_CHUNK_COLORS = [1, 2, 3, 4, 5, 6, 7]; // color ids for chunks
@@ -136,41 +136,58 @@ let risingLastGaps = [];          // gap columns of last row (for consecutive ga
 let risingConsecutiveGap = {};    // col -> count of consecutive gaps
 let risingFlashTime = 0;          // timestamp for bottom-row flash
 let risingRowsPushed = 0;         // total rows pushed up this game
+let risingSlideOffset = 0;        // px offset for smooth slide-up (0 → CELL)
+let risingPendingRow = null;      // pre-generated next row waiting to slide in
+let risingPendingGemRow = null;   // gem data for pending row
 
 // ─── PIRATE MODE STATE ───
 const PIRATE_SCORE_TRIGGER = 1000;   // points threshold for spaceship spawn
 const PIRATE_TIME_TRIGGER = 60;      // seconds threshold for spaceship spawn
 const PIRATE_WARN_DURATION = 2000;   // ms warning before ship appears
-const PIRATE_SHIP_ATTACK_INTERVAL = 10000; // 10s between attacks
-const PIRATE_LASER_DURATION = 2000;  // 2s laser on score display
-const PIRATE_SCORE_STEAL = 500;      // points stolen per attack
-const PIRATE_MAX_ATTACKS = 3;        // ship leaves after 3 steals
-const PIRATE_GAUGE_MAX = 2000;       // gauge fill threshold (points worth)
+const PIRATE_SCORE_STEAL = 3000;     // points stolen on arrival
+const PIRATE_LANE_HEIGHT = 2;        // cells tall for the ship lane
+const PIRATE_LANE_PX = PIRATE_LANE_HEIGHT * CELL; // 64px
+const PIRATE_SHIP_WIDTH = 60;
+const PIRATE_SHIP_HEIGHT = 30;
 
-let pirateScoreAccum = 0;            // score accumulated since last trigger reset
-let pirateTimeAccum = 0;             // seconds accumulated since last trigger reset
-let pirateShipActive = false;        // is the pirate ship on screen?
-let pirateWarning = false;           // is the WARNING showing?
-let pirateWarningStart = 0;          // timestamp of warning start
-let pirateShipX = -100;              // ship canvas X position (game-screen coords)
-let pirateShipY = 50;               // ship canvas Y position
-let pirateShipTargetX = 0;          // where ship is headed
-let pirateShipTargetY = 0;          // where ship is headed
-let pirateShipState = 'idle';       // 'entering', 'idle', 'attacking', 'stealing', 'leaving', 'hit', 'dying'
-let pirateShipAttackCount = 0;       // times ship has stolen score
-let pirateTotalStolen = 0;           // total score stolen by current ship
-let pirateAttackTimer = 0;           // ms since last attack or arrival
-let pirateLaserActive = false;       // is laser beam visible
-let pirateLaserStart = 0;            // when laser started
-let pirateGaugeValue = 0;            // current energy gauge fill (0 to PIRATE_GAUGE_MAX)
-let pirateGaugeVisible = false;      // is gauge panel shown
-let pirateCounterLaser = false;      // is counterattack laser firing
-let pirateCounterStart = 0;          // when counterattack began
-let pirateShipDying = false;         // is ship in death animation
-let pirateShipDyingStart = 0;        // when death animation started
-let pirateShipAngle = 0;             // wobble angle during death
-let pirateSmokeParticles = [];       // smoke during death
-let pirateScorePopups = [];          // floating score popups
+// Speed caps for the 4 factors
+const PIRATE_MAX_KILLS_FOR_SPEED = 5;
+const PIRATE_MAX_SCORE_FOR_SPEED = 10000;
+const PIRATE_MAX_LEVEL_FOR_SPEED = 5;
+const PIRATE_MAX_TIME_FOR_SPEED = 180;
+
+// Gauge scaling
+const PIRATE_GAUGE_BASE = 500;       // initial gauge requirement
+const PIRATE_GAUGE_CAP = 2000;       // max gauge requirement
+const PIRATE_GAUGE_MAX_KILLS = 3;    // kills that cap the gauge scaling
+const PIRATE_MAX_MISS = 3;           // 3 misses → game over
+
+let pirateScoreAccum = 0;
+let pirateTimeAccum = 0;
+let pirateShipActive = false;
+let pirateWarning = false;
+let pirateWarningStart = 0;
+let pirateShipX = 0;                 // X position in canvas coords
+let pirateShipY = 0;                 // Y position (within the lane)
+let pirateShipState = 'idle';        // 'moving', 'arrived', 'stealing', 'escaping', 'counter', 'dying'
+let pirateShipDirection = 1;         // 1 = moving left (R→L), -1 = moving right (escaping)
+let pirateShipSpeed = 0;             // px per ms
+let pirateTravelDuration = 60;       // seconds to cross (current, recalculated)
+let pirateArrivedTime = 0;           // timestamp when ship arrived at left
+let pirateStealDone = false;         // has the 3000pt steal happened?
+let pirateEscapeStart = 0;           // timestamp when escape began
+let pirateKillCount = 0;             // total successful kills this game
+let pirateMissCount = 0;             // total missed ships this game
+let pirateGaugeValue = 0;
+let pirateGaugeMax = PIRATE_GAUGE_BASE; // current gauge requirement (scales with kills)
+let pirateGaugeVisible = false;
+let pirateCounterLaser = false;
+let pirateCounterStart = 0;
+let pirateShipAngle = 0;
+let pirateShipDyingStart = 0;
+let pirateSmokeParticles = [];
+let pirateScorePopups = [];
+let pirateLaneVisible = false;       // is the 2-row lane showing?
 
 // Canvas refs
 let canvas, ctx;
@@ -642,14 +659,42 @@ function drawBoard() {
     ctx.stroke();
   }
 
-  // Locked cells
+  // Rising mode: compute vertical slide offset
+  const slideY = (gameMode === 'rising') ? risingSlideOffset : 0;
+
+  // Clip to board area so sliding cells don't overflow
+  if (slideY > 0) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, canvas.width, canvas.height);
+    ctx.clip();
+  }
+
+  // Locked cells (shifted up by slideY in rising mode)
   for (let r = HIDDEN_ROWS; r < TOTAL_ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       if (board[r][c]) {
         const vr = r - HIDDEN_ROWS;
-        drawCell(ctx, c * CELL, vr * CELL, CELL, board[r][c], false, gemBoard[r][c]);
+        const drawY = vr * CELL - slideY;
+        if (drawY > -CELL && drawY < canvas.height) {
+          drawCell(ctx, c * CELL, drawY, CELL, board[r][c], false, gemBoard[r][c]);
+        }
       }
     }
+  }
+
+  // Rising mode: draw the pending row sliding up from below
+  if (gameMode === 'rising' && risingPendingRow && slideY > 0) {
+    for (let c = 0; c < COLS; c++) {
+      if (risingPendingRow[c]) {
+        const drawY = ROWS * CELL - slideY;
+        drawCell(ctx, c * CELL, drawY, CELL, risingPendingRow[c], false, false);
+      }
+    }
+  }
+
+  if (slideY > 0) {
+    ctx.restore();
   }
 
   // Line clear flash (golden if gem, white otherwise)
@@ -663,7 +708,7 @@ function drawBoard() {
     }
     lineFlashRows.forEach(r => {
       const vr = r - HIDDEN_ROWS;
-      ctx.fillRect(0, vr * CELL, canvas.width, CELL);
+      ctx.fillRect(0, vr * CELL - slideY, canvas.width, CELL);
     });
   }
 
@@ -683,28 +728,42 @@ function drawBoard() {
     if (elapsed < 300) {
       const alpha = Math.max(0, 1 - elapsed / 300) * 0.5;
       ctx.fillStyle = `rgba(255, 100, 50, ${alpha})`;
-      ctx.fillRect(0, (ROWS - 1) * CELL, canvas.width, CELL);
+      ctx.fillRect(0, (ROWS - 1) * CELL - slideY, canvas.width, CELL);
     }
   }
 
-  // Rising mode: draw a subtle warning line showing rising progress
+  // Rising mode: draw a rising progress glow at the bottom edge
+  if (gameMode === 'rising' && slideY > 0) {
+    // Glowing line at the exact emerging point
+    const glowAlpha = Math.min(0.4, slideY / CELL * 0.5);
+    ctx.fillStyle = `rgba(255, 80, 30, ${glowAlpha})`;
+    ctx.fillRect(0, canvas.height - 2, canvas.width, 2);
+    // Subtle gradient glow rising from bottom
+    const grad = ctx.createLinearGradient(0, canvas.height - CELL, 0, canvas.height);
+    grad.addColorStop(0, 'rgba(255, 80, 30, 0)');
+    grad.addColorStop(1, `rgba(255, 80, 30, ${glowAlpha * 0.5})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, canvas.height - CELL, canvas.width, CELL);
+  }
+
+  // Rising mode: badge + speed indicator
   if (gameMode === 'rising') {
-    const pct = risingAccumulator / (risingSpeed * 1000);
-    if (pct > 0.3) {
-      const warningAlpha = Math.min(0.15, pct * 0.2);
-      ctx.fillStyle = `rgba(255, 80, 30, ${warningAlpha})`;
-      ctx.fillRect(0, (ROWS - 1) * CELL, canvas.width, CELL);
-    }
-    // Mode badge
     ctx.save();
     ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillStyle = 'rgba(255, 100, 50, 0.4)';
     ctx.textAlign = 'right';
     ctx.fillText('RISING', canvas.width - 6, 14);
+    // Show speed as visual urgency indicator
+    if (risingSpeed <= 3.0) {
+      const urgency = (3.0 - risingSpeed) / 1.0; // 0..1 as speed 3→2
+      const pulseAlpha = 0.05 + urgency * 0.05 * Math.abs(Math.sin(performance.now() / 300));
+      ctx.fillStyle = `rgba(255, 50, 20, ${pulseAlpha})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     ctx.restore();
   }
 
-  // Ghost piece
+  // Ghost piece (shifted by slideY in rising mode)
   if (currentPiece) {
     const ghostRow = getGhostRow();
     if (ghostRow !== currentPiece.row) {
@@ -713,20 +772,22 @@ function drawBoard() {
         const vr = ghostRow + dr - HIDDEN_ROWS;
         const vc = currentPiece.col + dc;
         const isGemCell = currentPiece.hasGem && idx === currentPiece.gemCellIndex;
-        if (vr >= 0 && vr < ROWS) {
-          drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, true, isGemCell);
+        const py = vr * CELL - slideY;
+        if (py > -CELL && py < canvas.height) {
+          drawCell(ctx, vc * CELL, py, CELL, currentPiece.id, true, isGemCell);
         }
       });
     }
 
-    // Current piece
+    // Current piece (shifted by slideY in rising mode)
     const pcells = getPieceCells(currentPiece);
     pcells.forEach(([dr, dc], idx) => {
       const vr = currentPiece.row + dr - HIDDEN_ROWS;
       const vc = currentPiece.col + dc;
       const isGemCell = currentPiece.hasGem && idx === currentPiece.gemCellIndex;
-      if (vr >= 0 && vr < ROWS) {
-        drawCell(ctx, vc * CELL, vr * CELL, CELL, currentPiece.id, false, isGemCell);
+      const py = vr * CELL - slideY;
+      if (py > -CELL && py < canvas.height) {
+        drawCell(ctx, vc * CELL, py, CELL, currentPiece.id, false, isGemCell);
       }
     });
   }
@@ -858,15 +919,23 @@ function gameLoop(timestamp) {
     lockDelay = 0;
   }
 
-  // Rising mode: accumulate time and push rows
+  // Rising mode: smooth slide-up
   if (gameMode === 'rising' && frameDelta > 0 && frameDelta < 500) {
-    risingAccumulator += frameDelta;
-    const intervalMs = risingSpeed * 1000;
-    // Update progress bar
+    // Ensure pending row exists
+    if (!risingPendingRow) {
+      risingPendingRow = generateRisingRow();
+      risingPendingGemRow = Array(COLS).fill(false);
+    }
+    // Calculate slide speed: CELL pixels per risingSpeed seconds
+    const pxPerMs = CELL / (risingSpeed * 1000);
+    risingSlideOffset += pxPerMs * frameDelta;
+    // Update progress bar based on slide offset
+    risingAccumulator = risingSlideOffset; // sync for UI
     updateRisingProgressBar();
-    while (risingAccumulator >= intervalMs) {
-      risingAccumulator -= intervalMs;
-      pushRisingRow();
+    // When offset reaches a full cell, commit the row shift
+    while (risingSlideOffset >= CELL) {
+      risingSlideOffset -= CELL;
+      commitRisingRow();
     }
   }
 
@@ -909,16 +978,18 @@ function startGame(mode) {
   pirateTimeAccum = 0;
   pirateShipActive = false;
   pirateWarning = false;
-  pirateLaserActive = false;
   pirateCounterLaser = false;
   pirateGaugeValue = 0;
+  pirateGaugeMax = PIRATE_GAUGE_BASE;
   pirateGaugeVisible = false;
-  pirateShipDying = false;
   pirateSmokeParticles = [];
   pirateScorePopups = [];
-  pirateShipAttackCount = 0;
-  pirateTotalStolen = 0;
+  pirateKillCount = 0;
+  pirateMissCount = 0;
   pirateShipState = 'idle';
+  pirateLaneVisible = false;
+  pirateStealDone = false;
+  pirateShipAngle = 0;
   const piratePanel = document.getElementById('pirate-gauge-panel');
   if (piratePanel) piratePanel.style.display = 'none';
 
@@ -929,6 +1000,9 @@ function startGame(mode) {
   risingConsecutiveGap = {};
   risingFlashTime = 0;
   risingRowsPushed = 0;
+  risingSlideOffset = 0;
+  risingPendingRow = null;
+  risingPendingGemRow = null;
 
   // Show/hide rising panel
   const risingPanel = document.getElementById('rising-panel');
@@ -1005,7 +1079,13 @@ function gameOver() {
   // Show mode info in game over
   const modeTag = gameMode === 'rising' ? ' (라이징)' : gameMode === 'pirate' ? ' (파이렛)' : '';
   const goTitle = document.querySelector('#gameover-overlay h2');
-  if (goTitle) goTitle.textContent = '게임 오버' + modeTag;
+  if (goTitle) {
+    if (gameMode === 'pirate' && pirateMissCount >= PIRATE_MAX_MISS) {
+      goTitle.textContent = '해적에게 패배!' + modeTag;
+    } else {
+      goTitle.textContent = '게임 오버' + modeTag;
+    }
+  }
 }
 
 async function saveScore() {
@@ -1178,25 +1258,54 @@ function startPirateWarning() {
   pirateWarningStart = performance.now();
 }
 
+/**
+ * Calculate how long (seconds) the ship takes to cross from right to left.
+ * 4 factors: kills (max 5), score (max 10000), level (max 5), time (max 180s)
+ * Each factor normalized to 0–1, averaged, then interpolated 60s → 15s.
+ */
+function calculatePirateTravelTime() {
+  const killFactor = Math.min(pirateKillCount, PIRATE_MAX_KILLS_FOR_SPEED) / PIRATE_MAX_KILLS_FOR_SPEED;
+  const scoreFactor = Math.min(score, PIRATE_MAX_SCORE_FOR_SPEED) / PIRATE_MAX_SCORE_FOR_SPEED;
+  const levelFactor = Math.min(level, PIRATE_MAX_LEVEL_FOR_SPEED) / PIRATE_MAX_LEVEL_FOR_SPEED;
+  const timeFactor = Math.min(playTime, PIRATE_MAX_TIME_FOR_SPEED) / PIRATE_MAX_TIME_FOR_SPEED;
+  const combined = (killFactor + scoreFactor + levelFactor + timeFactor) / 4; // 0..1
+  return 60 - combined * (60 - 15); // 60s → 15s
+}
+
+/**
+ * Calculate gauge requirement. Increases with kill count (500 → 2000).
+ * On miss, requirement decreases (easier).
+ */
+function calculatePirateGaugeMax() {
+  const effectiveKills = Math.max(0, pirateKillCount - pirateMissCount);
+  const killRatio = Math.min(effectiveKills, PIRATE_GAUGE_MAX_KILLS) / PIRATE_GAUGE_MAX_KILLS;
+  return Math.round(PIRATE_GAUGE_BASE + killRatio * (PIRATE_GAUGE_CAP - PIRATE_GAUGE_BASE));
+}
+
 function spawnPirateShip() {
   pirateShipActive = true;
   pirateWarning = false;
-  pirateShipAttackCount = 0;
-  pirateTotalStolen = 0;
-  pirateAttackTimer = 0;
-  pirateShipState = 'entering';
-  pirateShipX = canvas.width + 80;
-  pirateShipY = -40;
-  pirateShipTargetX = canvas.width / 2 - 30;
-  pirateShipTargetY = 20;
-  pirateLaserActive = false;
+  pirateLaneVisible = true;
+  pirateShipState = 'moving';
+  pirateShipDirection = 1; // moving left (R→L)
+  pirateStealDone = false;
+  pirateSmokeParticles = [];
+  pirateShipAngle = 0;
+  pirateCounterLaser = false;
+
+  // Calculate speed
+  pirateTravelDuration = calculatePirateTravelTime();
+  const travelPixels = canvas.width + PIRATE_SHIP_WIDTH; // full distance to cross
+  pirateShipSpeed = travelPixels / (pirateTravelDuration * 1000); // px per ms
+
+  // Start position: right edge of canvas
+  pirateShipX = canvas.width + 10;
+  pirateShipY = PIRATE_LANE_PX / 2 - PIRATE_SHIP_HEIGHT / 2; // centered in lane (drawn above board)
+
+  // Gauge setup
+  pirateGaugeMax = calculatePirateGaugeMax();
   pirateGaugeValue = 0;
   pirateGaugeVisible = true;
-  pirateShipDying = false;
-  pirateShipAngle = 0;
-  pirateSmokeParticles = [];
-
-  // Show gauge panel
   const panel = document.getElementById('pirate-gauge-panel');
   if (panel) panel.style.display = 'block';
   updatePirateGaugeUI();
@@ -1216,27 +1325,13 @@ function updatePirateShip(frameDelta) {
 
   if (!pirateShipActive) return;
 
-  // Ship entering
-  if (pirateShipState === 'entering') {
-    pirateShipX += (pirateShipTargetX - pirateShipX) * 0.05;
-    pirateShipY += (pirateShipTargetY - pirateShipY) * 0.05;
-    if (Math.abs(pirateShipX - pirateShipTargetX) < 2 && Math.abs(pirateShipY - pirateShipTargetY) < 2) {
-      pirateShipX = pirateShipTargetX;
-      pirateShipY = pirateShipTargetY;
-      pirateShipState = 'idle';
-      pirateAttackTimer = 0;
-    }
-    return;
-  }
-
-  // Death animation
+  // Death animation (kept from before)
   if (pirateShipState === 'dying') {
     const elapsed = performance.now() - pirateShipDyingStart;
     pirateShipAngle = Math.sin(elapsed / 80) * (0.1 + elapsed / 5000);
-    pirateShipY += 0.3;
+    pirateShipY += 0.5;
     pirateShipX += Math.sin(elapsed / 200) * 2;
 
-    // Add smoke particles
     if (Math.random() < 0.4) {
       pirateSmokeParticles.push({
         x: pirateShipX + 20 + Math.random() * 30,
@@ -1247,30 +1342,21 @@ function updatePirateShip(frameDelta) {
         size: 4 + Math.random() * 8,
       });
     }
-
-    // Update smoke
     pirateSmokeParticles.forEach(p => {
-      p.x += p.vx;
-      p.y += p.vy;
-      p.life -= 0.02;
-      p.size += 0.3;
+      p.x += p.vx; p.y += p.vy;
+      p.life -= 0.02; p.size += 0.3;
     });
     pirateSmokeParticles = pirateSmokeParticles.filter(p => p.life > 0);
 
     if (elapsed > 2500) {
-      // Ship disappears — recover half stolen score
-      const recovered = Math.floor(pirateTotalStolen / 2);
-      score += recovered;
-      if (recovered > 0) {
-        pirateScorePopups.push({
-          text: `+${recovered} 회복!`,
-          x: canvas.width / 2,
-          y: canvas.height / 3,
-          time: performance.now(),
-          color: '#3bff6e',
-        });
-      }
-      updateUI();
+      pirateKillCount++;
+      pirateScorePopups.push({
+        text: `+격추! (${pirateKillCount})`,
+        x: canvas.width / 2,
+        y: PIRATE_LANE_PX + 40,
+        time: performance.now(),
+        color: '#3bff6e',
+      });
       endPirateShip();
     }
     return;
@@ -1287,94 +1373,73 @@ function updatePirateShip(frameDelta) {
     return;
   }
 
-  // Leaving
-  if (pirateShipState === 'leaving') {
-    pirateShipX += 4;
-    pirateShipY -= 2;
-    if (pirateShipX > canvas.width + 120) {
-      endPirateShip();
+  // Moving R→L
+  if (pirateShipState === 'moving') {
+    pirateShipX -= pirateShipSpeed * frameDelta;
+
+    // Arrived at left edge (score panel area)?
+    if (pirateShipX <= -PIRATE_SHIP_WIDTH + 15) {
+      pirateShipX = -PIRATE_SHIP_WIDTH + 15;
+      pirateShipState = 'arrived';
+      pirateArrivedTime = performance.now();
+      pirateStealDone = false;
     }
     return;
   }
 
-  // Idle / waiting to attack
-  if (pirateShipState === 'idle') {
-    pirateAttackTimer += frameDelta;
-    // Gentle hovering
-    pirateShipY = pirateShipTargetY + Math.sin(performance.now() / 800) * 4;
-
-    if (pirateAttackTimer >= PIRATE_SHIP_ATTACK_INTERVAL) {
-      pirateAttackTimer = 0;
-      startPirateAttack();
-    }
-  }
-
-  // Attacking phase — ship moves to score area then fires laser
-  if (pirateShipState === 'attacking') {
-    // Ship moves toward score panel area (upper left of canvas)
-    const attackX = 10;
-    const attackY = 15;
-    pirateShipX += (attackX - pirateShipX) * 0.06;
-    pirateShipY += (attackY - pirateShipY) * 0.06;
-
-    if (Math.abs(pirateShipX - attackX) < 5 && Math.abs(pirateShipY - attackY) < 5) {
-      pirateShipState = 'stealing';
-      pirateLaserActive = true;
-      pirateLaserStart = performance.now();
-    }
-  }
-
-  // Stealing phase — laser on score
-  if (pirateShipState === 'stealing') {
-    const elapsed = performance.now() - pirateLaserStart;
-    if (elapsed >= PIRATE_LASER_DURATION) {
-      // Steal score!
+  // Arrived at left – wait 2s then steal
+  if (pirateShipState === 'arrived') {
+    const elapsed = performance.now() - pirateArrivedTime;
+    if (elapsed >= 2000 && !pirateStealDone) {
+      // STEAL 3000 points
       const stolen = Math.min(score, PIRATE_SCORE_STEAL);
       score -= stolen;
-      pirateTotalStolen += stolen;
-      pirateShipAttackCount++;
-
+      pirateStealDone = true;
       pirateScorePopups.push({
         text: `-${stolen}`,
-        x: 60,
-        y: 40,
+        x: 80,
+        y: PIRATE_LANE_PX + 30,
         time: performance.now(),
         color: '#ff3b3b',
       });
-
       updateUI();
-      pirateLaserActive = false;
+      // Start escaping right
+      pirateShipState = 'escaping';
+      pirateEscapeStart = performance.now();
+      pirateShipDirection = -1;
+    }
+    return;
+  }
 
-      if (pirateShipAttackCount >= PIRATE_MAX_ATTACKS) {
-        pirateShipState = 'leaving';
-      } else {
-        // Return to center idle position
-        pirateShipState = 'returning';
+  // Escaping right (2 seconds to exit)
+  if (pirateShipState === 'escaping') {
+    const escapeSpeed = (canvas.width + PIRATE_SHIP_WIDTH + 30) / 2000; // full width in 2s
+    pirateShipX += escapeSpeed * frameDelta;
+    if (pirateShipX > canvas.width + 30) {
+      // Ship escaped — miss!
+      pirateMissCount++;
+      pirateScorePopups.push({
+        text: `격추 실패! (${pirateMissCount}/${PIRATE_MAX_MISS})`,
+        x: canvas.width / 2,
+        y: PIRATE_LANE_PX + 60,
+        time: performance.now(),
+        color: '#ff8c3b',
+      });
+      endPirateShip();
+      // Check game over
+      if (pirateMissCount >= PIRATE_MAX_MISS) {
+        setTimeout(() => { gameOver(); }, 500);
       }
     }
+    return;
   }
-
-  // Returning to center after attack
-  if (pirateShipState === 'returning') {
-    pirateShipX += (pirateShipTargetX - pirateShipX) * 0.06;
-    pirateShipY += (pirateShipTargetY - pirateShipY) * 0.06;
-    if (Math.abs(pirateShipX - pirateShipTargetX) < 3) {
-      pirateShipState = 'idle';
-      pirateAttackTimer = 0;
-    }
-  }
-}
-
-function startPirateAttack() {
-  pirateShipState = 'attacking';
 }
 
 function firePirateCounterLaser() {
-  if (!pirateShipActive || pirateShipState === 'dying' || pirateShipState === 'leaving' || pirateShipState === 'counter') return;
+  if (!pirateShipActive || pirateShipState === 'dying' || pirateShipState === 'counter') return;
   pirateShipState = 'counter';
   pirateCounterLaser = true;
   pirateCounterStart = performance.now();
-  pirateLaserActive = false; // cancel any ship laser
   pirateGaugeValue = 0;
   updatePirateGaugeUI();
 }
@@ -1383,24 +1448,24 @@ function endPirateShip() {
   pirateShipActive = false;
   pirateWarning = false;
   pirateShipState = 'idle';
-  pirateLaserActive = false;
   pirateCounterLaser = false;
   pirateGaugeVisible = false;
   pirateGaugeValue = 0;
   pirateSmokeParticles = [];
+  pirateLaneVisible = false;
 
   const panel = document.getElementById('pirate-gauge-panel');
   if (panel) panel.style.display = 'none';
 }
 
 function addPirateGaugeEnergy(points) {
-  if (!pirateGaugeVisible || !pirateShipActive) return false; // not diverting
-  pirateGaugeValue = Math.min(PIRATE_GAUGE_MAX, pirateGaugeValue + points);
+  if (!pirateGaugeVisible || !pirateShipActive) return false;
+  pirateGaugeValue = Math.min(pirateGaugeMax, pirateGaugeValue + points);
   updatePirateGaugeUI();
-  if (pirateGaugeValue >= PIRATE_GAUGE_MAX) {
+  if (pirateGaugeValue >= pirateGaugeMax) {
     firePirateCounterLaser();
   }
-  return true; // energy was diverted instead of scoring
+  return true;
 }
 
 function updatePirateGaugeUI() {
@@ -1408,32 +1473,68 @@ function updatePirateGaugeUI() {
   const wrap = document.querySelector('.pirate-gauge-wrap');
   const hint = document.getElementById('pirate-gauge-hint');
   if (!bar) return;
-  const pct = Math.min(100, (pirateGaugeValue / PIRATE_GAUGE_MAX) * 100);
+  const pct = Math.min(100, (pirateGaugeValue / pirateGaugeMax) * 100);
   bar.style.width = pct + '%';
-  if (wrap) {
-    wrap.classList.toggle('active', pct > 20);
-  }
+  if (wrap) wrap.classList.toggle('active', pct > 20);
   if (hint) {
     if (pct >= 100) {
       hint.textContent = '발사 준비 완료!';
     } else {
-      hint.textContent = `${Math.floor(pct)}% 충전 중...`;
+      hint.textContent = `${Math.floor(pct)}% (${pirateGaugeValue}/${pirateGaugeMax})`;
     }
   }
 }
 
 // ─── PIRATE SHIP RENDERER ───
 function drawPirateShip(ctx) {
+  // Draw lane bar when visible
+  if (pirateLaneVisible || pirateWarning) {
+    // Dark translucent lane at top (drawn ABOVE the board → negative Y in canvas is clipped,
+    // so we draw it at Y=0 as an overlay on top of the first 2 rows)
+    ctx.save();
+    const laneY = 0;
+    ctx.fillStyle = 'rgba(30, 10, 40, 0.85)';
+    ctx.fillRect(0, laneY, canvas.width, PIRATE_LANE_PX);
+
+    // Lane border bottom
+    ctx.strokeStyle = 'rgba(180, 50, 255, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, laneY + PIRATE_LANE_PX);
+    ctx.lineTo(canvas.width, laneY + PIRATE_LANE_PX);
+    ctx.stroke();
+
+    // Lane label
+    ctx.font = '8px "Press Start 2P", monospace';
+    ctx.fillStyle = 'rgba(180, 50, 255, 0.5)';
+    ctx.textAlign = 'left';
+    ctx.fillText('☠ PIRATE LANE', 6, laneY + 12);
+
+    // Miss counter on lane
+    if (pirateMissCount > 0) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(255, 80, 80, 0.7)';
+      ctx.fillText(`MISS: ${pirateMissCount}/${PIRATE_MAX_MISS}`, canvas.width - 6, laneY + 12);
+    }
+
+    // Speed indicator
+    ctx.textAlign = 'right';
+    ctx.font = '7px "Press Start 2P", monospace';
+    ctx.fillStyle = 'rgba(255, 200, 100, 0.4)';
+    ctx.fillText(`${pirateTravelDuration.toFixed(0)}s`, canvas.width - 6, laneY + PIRATE_LANE_PX - 6);
+
+    ctx.restore();
+  }
+
   if (!pirateShipActive && !pirateWarning) return;
 
   ctx.save();
 
-  // WARNING phase — flash text
+  // WARNING phase
   if (pirateWarning && !pirateShipActive) {
     const elapsed = performance.now() - pirateWarningStart;
     const alpha = 0.5 + 0.5 * Math.sin(elapsed / 150);
-    
-    // Red screen flash
+
     ctx.fillStyle = `rgba(255, 0, 0, ${alpha * 0.08})`;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -1461,7 +1562,16 @@ function drawPirateShip(ctx) {
   const sx = pirateShipX;
   const sy = pirateShipY;
 
-  // ── Ship body (pirate spaceship) ──
+  // ── Ship body ──
+  // Flip ship when escaping (moving right)
+  const facingLeft = (pirateShipState !== 'escaping');
+  ctx.save();
+  if (!facingLeft) {
+    ctx.translate(sx + 35, sy + 15);
+    ctx.scale(-1, 1);
+    ctx.translate(-(sx + 35), -(sy + 15));
+  }
+
   // Main hull
   ctx.fillStyle = '#2a1a3a';
   ctx.beginPath();
@@ -1474,7 +1584,7 @@ function drawPirateShip(ctx) {
   ctx.closePath();
   ctx.fill();
 
-  // Deck (pirate ship style)
+  // Deck
   ctx.fillStyle = '#4a2a5a';
   ctx.beginPath();
   ctx.moveTo(sx + 15, sy + 15);
@@ -1492,78 +1602,57 @@ function drawPirateShip(ctx) {
   ctx.textAlign = 'center';
   ctx.fillText('☠', sx + 35, sy + 20);
 
-  // Engine glow
+  // Engine glow (rear, which is right side when facing left)
   ctx.fillStyle = 'rgba(180, 50, 255, 0.6)';
   ctx.shadowColor = '#b83bff';
   ctx.shadowBlur = 12;
   ctx.beginPath();
-  ctx.ellipse(sx + 10, sy + 25, 5, 3, 0, 0, Math.PI * 2);
+  ctx.ellipse(sx + 58, sy + 18, 5, 3, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  // Mast / antenna
+  // Mast
   ctx.strokeStyle = '#888';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.moveTo(sx + 35, sy + 5);
-  ctx.lineTo(sx + 35, sy - 10);
+  ctx.lineTo(sx + 35, sy - 8);
   ctx.stroke();
 
   // Pirate flag
   ctx.fillStyle = '#111';
-  ctx.fillRect(sx + 35, sy - 10, 12, 8);
+  ctx.fillRect(sx + 35, sy - 8, 12, 8);
   ctx.fillStyle = '#fff';
   ctx.font = '5px serif';
   ctx.textAlign = 'center';
-  ctx.fillText('☠', sx + 41, sy - 4);
+  ctx.fillText('☠', sx + 41, sy - 2);
 
-  // Ship cannon (pointing down-left toward score)
-  if (pirateShipState === 'attacking' || pirateShipState === 'stealing') {
-    ctx.strokeStyle = '#ff3b3b';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(sx + 20, sy + 28);
-    ctx.lineTo(sx + 10, sy + 38);
-    ctx.stroke();
+  ctx.restore(); // un-flip
+
+  // ── Steal flash when arrived ──
+  if (pirateShipState === 'arrived') {
+    const elapsed = performance.now() - pirateArrivedTime;
+    if (elapsed < 2000) {
+      // Pulsing warning at ship
+      const pulseAlpha = 0.3 + 0.3 * Math.sin(elapsed / 120);
+      ctx.fillStyle = `rgba(255, 50, 50, ${pulseAlpha})`;
+      ctx.beginPath();
+      ctx.arc(sx + 35, sy + 15, 25 + Math.sin(elapsed / 80) * 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
-  // ── Ship's laser beam ──
-  if (pirateLaserActive) {
-    const elapsed = performance.now() - pirateLaserStart;
-    const laserAlpha = 0.5 + 0.5 * Math.sin(elapsed / 100);
-    const progress = Math.min(1, elapsed / PIRATE_LASER_DURATION);
-    
-    // Laser from ship to score area
-    const laserStartX = sx + 15;
-    const laserStartY = sy + 35;
-    const laserEndX = 0;
-    const laserEndY = 0;
-
-    // Wide red beam
-    ctx.strokeStyle = `rgba(255, 50, 50, ${laserAlpha * 0.8})`;
-    ctx.lineWidth = 4;
-    ctx.shadowColor = '#ff0000';
-    ctx.shadowBlur = 15;
-    ctx.beginPath();
-    ctx.moveTo(laserStartX, laserStartY);
-    ctx.lineTo(laserEndX, laserEndY);
-    ctx.stroke();
-
-    // Inner bright core
-    ctx.strokeStyle = `rgba(255, 200, 200, ${laserAlpha})`;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(laserStartX, laserStartY);
-    ctx.lineTo(laserEndX, laserEndY);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // Score drain indicator (progress bar on top of canvas)
-    ctx.fillStyle = `rgba(255, 0, 0, ${0.3 + laserAlpha * 0.2})`;
-    ctx.fillRect(0, 0, canvas.width * progress, 3);
+  // ── Score steal visual ──
+  if (pirateShipState === 'escaping' && pirateStealDone) {
+    const elapsed = performance.now() - pirateEscapeStart;
+    if (elapsed < 800) {
+      const alpha = 1 - elapsed / 800;
+      ctx.fillStyle = `rgba(255, 50, 50, ${alpha * 0.3})`;
+      ctx.fillRect(0, 0, canvas.width, PIRATE_LANE_PX);
+    }
   }
 
-  // ── Counter laser (from bottom-center to ship) ──
+  // ── Counter laser (from board bottom to ship) ──
   if (pirateCounterLaser) {
     const elapsed = performance.now() - pirateCounterStart;
     const laserAlpha = 0.6 + 0.4 * Math.sin(elapsed / 60);
@@ -1573,7 +1662,6 @@ function drawPirateShip(ctx) {
     const endX = sx + 35;
     const endY = sy + 15;
 
-    // Orange-red counter beam
     ctx.strokeStyle = `rgba(255, 140, 0, ${laserAlpha})`;
     ctx.lineWidth = 6;
     ctx.shadowColor = '#ff8c00';
@@ -1583,7 +1671,6 @@ function drawPirateShip(ctx) {
     ctx.lineTo(endX, endY);
     ctx.stroke();
 
-    // Bright core
     ctx.strokeStyle = `rgba(255, 255, 200, ${laserAlpha})`;
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1592,7 +1679,6 @@ function drawPirateShip(ctx) {
     ctx.stroke();
     ctx.shadowBlur = 0;
 
-    // Impact flash at ship
     ctx.fillStyle = `rgba(255, 200, 50, ${laserAlpha * 0.5})`;
     ctx.beginPath();
     ctx.arc(endX, endY, 15 + Math.sin(elapsed / 50) * 5, 0, Math.PI * 2);
@@ -1606,7 +1692,6 @@ function drawPirateShip(ctx) {
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
     ctx.fill();
-    // Fire particle
     if (p.life > 0.5) {
       ctx.fillStyle = `rgba(255, 100, 0, ${(p.life - 0.5) * 1.5})`;
       ctx.beginPath();
@@ -1628,7 +1713,7 @@ function drawPirateShip(ctx) {
       const yOff = -prog * 50;
       ctx.save();
       ctx.globalAlpha = alpha;
-      ctx.font = 'bold 18px "Press Start 2P", monospace';
+      ctx.font = 'bold 16px "Press Start 2P", monospace';
       ctx.textAlign = 'center';
       ctx.fillStyle = popup.color;
       ctx.shadowColor = popup.color;
@@ -1664,15 +1749,16 @@ function updateRisingUI() {
   if (el) el.textContent = risingSpeed.toFixed(1) + '초';
   const hint = document.getElementById('rising-hint');
   if (hint) {
-    const remaining = Math.max(0, risingSpeed * 1000 - risingAccumulator);
-    hint.textContent = `다음 줄까지 ${(remaining / 1000).toFixed(1)}초`;
+    const remainingPx = Math.max(0, CELL - risingSlideOffset);
+    const remainingMs = remainingPx / (CELL / (risingSpeed * 1000));
+    hint.textContent = `다음 줄까지 ${(remainingMs / 1000).toFixed(1)}초`;
   }
 }
 
 function updateRisingProgressBar() {
   const bar = document.getElementById('rising-bar');
   if (!bar) return;
-  const pct = Math.min(100, (risingAccumulator / (risingSpeed * 1000)) * 100);
+  const pct = Math.min(100, (risingSlideOffset / CELL) * 100);
   bar.style.width = pct + '%';
   // Color: green -> yellow -> red
   if (pct < 50) bar.style.background = 'var(--green)';
@@ -1681,20 +1767,16 @@ function updateRisingProgressBar() {
 }
 
 /**
- * Generate one rising row and push the entire board up by 1.
- * Row structure: 2 or 3 "chunks" of solid blocks with 1-3 gaps.
- * Gap constraint: a gap column can only repeat directly below itself
- * at most 2 consecutive times.
+ * Commit the pending rising row into the board (called when slide offset reaches CELL).
+ * Uses the pre-generated risingPendingRow.
  */
-function pushRisingRow() {
+function commitRisingRow() {
   if (!isPlaying || isPaused) return;
 
-  // 1) Generate the new row
-  const newRow = generateRisingRow();
-  const newGemRow = Array(COLS).fill(false);
+  const newRow = risingPendingRow || generateRisingRow();
+  const newGemRow = risingPendingGemRow || Array(COLS).fill(false);
 
-  // 2) Check if pushing up would cause game over
-  //    (top hidden row has blocks that would go above the board)
+  // Check if pushing up would cause game over
   for (let c = 0; c < COLS; c++) {
     if (board[0][c] !== 0) {
       gameOver();
@@ -1702,23 +1784,19 @@ function pushRisingRow() {
     }
   }
 
-  // 3) Push board up: remove top row, add new row at bottom
+  // Push board up: remove top row, add new row at bottom
   board.shift();
   board.push(newRow);
   gemBoard.shift();
   gemBoard.push(newGemRow);
 
-  // 4) Move current piece up by 1 (it stays in same visual position
-  //    relative to the board which just shifted down)
+  // Move current piece up by 1
   if (currentPiece) {
     currentPiece.row--;
-    // If piece now collides, push it up more or game over
     if (currentPiece.row < 0) {
-      // Try to keep piece in bounds
       currentPiece.row = 0;
     }
     if (!isValid(currentPiece, 0, 0)) {
-      // Try pushing piece up
       for (let nudge = -1; nudge >= -3; nudge--) {
         const test = { ...currentPiece, row: currentPiece.row + nudge };
         if (test.row >= 0 && isValid(test, 0, 0)) {
@@ -1726,7 +1804,6 @@ function pushRisingRow() {
           break;
         }
       }
-      // If still invalid, game over
       if (!isValid(currentPiece, 0, 0)) {
         gameOver();
         return;
@@ -1736,6 +1813,10 @@ function pushRisingRow() {
 
   risingRowsPushed++;
   risingFlashTime = performance.now();
+
+  // Prepare next pending row
+  risingPendingRow = generateRisingRow();
+  risingPendingGemRow = Array(COLS).fill(false);
 
   // Bonus points for surviving
   score += 5 * level;
