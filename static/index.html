@@ -28,6 +28,9 @@
         <button class="btn btn-score" onclick="showScores()">
           <span class="btn-icon">🏆</span> 스코어
         </button>
+        <button class="btn btn-options" onclick="showOptions()">
+          <span class="btn-icon">⚙️</span> 옵션
+        </button>
         <button class="btn btn-quit" onclick="quitGame()">
           <span class="btn-icon">✕</span> 게임 종료
         </button>
@@ -161,6 +164,43 @@
         </table>
       </div>
       <button class="btn btn-back" onclick="showMenu()">← 메뉴로 돌아가기</button>
+    </div>
+  </div>
+
+  <!-- ============ OPTIONS SCREEN ============ -->
+  <div id="options-screen" class="screen">
+    <div class="options-container">
+      <h2 class="options-title">⚙️ 옵션</h2>
+
+      <div class="options-box">
+        <div class="volume-control">
+          <div class="volume-header">
+            <span class="volume-label">🎵 Background</span>
+            <span class="volume-value" id="bgm-value">50</span>
+          </div>
+          <div class="slider-row">
+            <span class="slider-min">0</span>
+            <input type="range" id="bgm-slider" class="volume-slider" min="0" max="100" value="50"
+                   oninput="onBgmVolumeChange(this.value)" />
+            <span class="slider-max">100</span>
+          </div>
+        </div>
+
+        <div class="volume-control">
+          <div class="volume-header">
+            <span class="volume-label">🔊 System</span>
+            <span class="volume-value" id="sfx-value">50</span>
+          </div>
+          <div class="slider-row">
+            <span class="slider-min">0</span>
+            <input type="range" id="sfx-slider" class="volume-slider" min="0" max="100" value="50"
+                   oninput="onSfxVolumeChange(this.value)" onchange="onSfxSliderRelease()" />
+            <span class="slider-max">100</span>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-back" onclick="AudioManager.playSFX('button_click'); showMenu()">← 메뉴로 돌아가기</button>
     </div>
   </div>
 
