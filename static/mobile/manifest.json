@@ -1,0 +1,14 @@
+{
+  "name": "테트리스 파이렛",
+  "short_name": "Tetris",
+  "description": "해적 우주선을 물리치는 테트리스 어드벤처!",
+  "start_url": "/mobile/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0a0a1a",
+  "theme_color": "#0a0a1a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/jpeg" }
+  ]
+}

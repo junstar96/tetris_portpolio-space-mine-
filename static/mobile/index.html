@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="screen-orientation" content="landscape" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <title>테트리스 파이렛</title>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Noto+Sans+KR:wght@400;700;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="mobile.css" />
+</head>
+<body>
+  <!-- ===== TITLE SCREEN ===== -->
+  <div id="title-screen" class="screen active">
+    <div class="title-wrap">
+      <h1 class="title">
+        <span class="t1">T</span><span class="t2">E</span><span class="t3">T</span><span class="t4">R</span><span class="t5">I</span><span class="t1">S</span>
+      </h1>
+      <p class="sub">PIRATE ADVENTURE</p>
+      <button class="btn-play" id="btn-play">GAME START</button>
+      <button class="btn-option" id="btn-option">OPTION</button>
+    </div>
+  </div>
+
+  <!-- ===== OPTION SCREEN ===== -->
+  <div id="option-screen" class="screen">
+    <div class="opt-wrap">
+      <h2>OPTION</h2>
+      <div class="vol-row">
+        <span class="vol-label">🎵 BGM</span>
+        <span class="vol-num" id="bgm-num">50</span>
+        <input type="range" id="bgm-range" min="0" max="100" value="50" />
+      </div>
+      <div class="vol-row">
+        <span class="vol-label">🔊 SFX</span>
+        <span class="vol-num" id="sfx-num">50</span>
+        <input type="range" id="sfx-range" min="0" max="100" value="50" />
+      </div>
+      <button class="btn-back" id="btn-opt-back">BACK</button>
+    </div>
+  </div>
+
+  <!-- ===== GAME SCREEN ===== -->
+  <div id="game-screen" class="screen">
+    <div class="game-hud">
+      <!-- LEFT: UI + Joystick -->
+      <div class="hud-left">
+        <div class="info-panel">
+          <div class="info-row"><span class="info-lbl">SCORE</span><span class="info-val" id="m-score">0</span></div>
+          <div class="info-row"><span class="info-lbl">LEVEL</span><span class="info-val" id="m-level">1</span></div>
+          <div class="info-row"><span class="info-lbl">LINES</span><span class="info-val" id="m-lines">0</span></div>
+        </div>
+        <div class="hold-wrap">
+          <span class="hold-lbl">HOLD</span>
+          <canvas id="m-hold" width="70" height="70"></canvas>
+        </div>
+        <div class="joystick-area" id="joystick-area">
+          <div class="joy-base" id="joy-base">
+            <div class="joy-knob" id="joy-knob"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER: Board -->
+      <div class="board-area">
+        <canvas id="m-canvas"></canvas>
+        <!-- Gauge overlay -->
+        <div class="gauge-bar-wrap" id="m-gauge-wrap" style="display:none;">
+          <div class="gauge-fill" id="m-gauge-fill"></div>
+          <span class="gauge-txt" id="m-gauge-txt">0%</span>
+        </div>
+      </div>
+
+      <!-- RIGHT: UI + Buttons -->
+      <div class="hud-right">
+        <div class="next-panel">
+          <span class="next-lbl">NEXT</span>
+          <canvas id="m-next-0" width="60" height="60"></canvas>
+          <canvas id="m-next-1" width="60" height="60"></canvas>
+          <canvas id="m-next-2" width="60" height="60"></canvas>
+        </div>
+        <div class="btn-area">
+          <button class="act-btn btn-rotate" id="btn-rotate">↻</button>
+          <button class="act-btn btn-drop" id="btn-drop">⬇</button>
+          <button class="act-btn btn-hold" id="btn-hold">H</button>
+          <button class="act-btn btn-pause" id="btn-pause">⏸</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pause overlay -->
+    <div id="pause-ov" class="overlay hidden">
+      <h2>PAUSED</h2>
+      <button class="btn-play" id="btn-resume">RESUME</button>
+      <button class="btn-back" id="btn-to-title">MENU</button>
+    </div>
+
+    <!-- Game Over overlay -->
+    <div id="go-ov" class="overlay hidden">
+      <h2 id="go-title">GAME OVER</h2>
+      <p class="go-stat">SCORE: <span id="go-score">0</span></p>
+      <p class="go-stat">LEVEL: <span id="go-level">1</span> | LINES: <span id="go-lines">0</span></p>
+      <button class="btn-play" id="btn-retry">RETRY</button>
+      <button class="btn-back" id="btn-go-title">MENU</button>
+    </div>
+  </div>
+
+  <script src="mobile.js"></script>
+</body>
+</html>
