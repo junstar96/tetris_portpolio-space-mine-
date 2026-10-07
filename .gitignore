@@ -2,4 +2,5 @@ __pycache__/
 *.pyc
 scores.json
 *.png
+!static/mobile/icons/*.png
 .DS_Store
