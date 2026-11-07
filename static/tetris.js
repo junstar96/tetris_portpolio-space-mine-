@@ -286,6 +286,11 @@ const WALL_KICKS = [
 // Scoring
 const LINE_SCORES = [0, 100, 300, 500, 800]; // 0,1,2,3,4 lines
 
+// ─── BACKGROUND THEME ───
+// 'space' = Space Open-Pit Mine, 'jewel' = Jewel Mine (see bg-scroller.js)
+const BG_THEME_BY_MODE = { pirate: 'space', rising: 'jewel', mine: 'jewel' };
+const BG_VEIL_ALPHA = 0.5; // dark overlay over the background so blocks stay readable
+
 // ─── GAME STATE ───
 let gameMode = 'pirate';      // 'pirate' or 'rising'
 let board = [];
@@ -297,6 +302,7 @@ let nextQueue = [];
 let bag = [];
 let score = 0;
 let level = 1;
+let levelOffset = 0;          // starting level - 1 (roguelike stages start at higher levels)
 let lines = 0;
 let playTime = 0;
 let timerInterval = null;
@@ -360,6 +366,7 @@ const PIRATE_GAUGE_CAP = 2000;       // max gauge requirement
 const PIRATE_GAUGE_MAX_KILLS = 3;    // kills that cap the gauge scaling
 const PIRATE_MAX_MISS = 3;           // 3 misses → game over
 
+let pirateTimeTrigger = PIRATE_TIME_TRIGGER; // overridable per game (roguelike pirate stage)
 let pirateScoreAccum = 0;
 let pirateTimeAccum = 0;
 let pirateShipActive = false;
@@ -597,7 +604,7 @@ function clearLines() {
     }
 
     const oldLevel = level;
-    level = Math.floor(lines / 10) + 1;
+    level = Math.floor(lines / 10) + 1 + levelOffset;
     dropSpeed = Math.max(80, 800 - (level - 1) * 60);
 
     // SFX: level up
@@ -606,6 +613,9 @@ function clearLines() {
     }
 
     updateUI();
+
+    // Roguelike: stage goal check
+    if (window.Rogue) Rogue.onLinesCleared(cleared);
   }, 200);
 }
 
@@ -868,12 +878,16 @@ function drawGemIcon(ctx, x, y, size) {
 }
 
 function drawBoard() {
-  // Background grid
-  ctx.fillStyle = '#0a0a16';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Belt-scrolling theme background (jewel mine / space open-pit mine)
+  if (window.BgScroller) {
+    BgScroller.draw(ctx, canvas.width, canvas.height, BG_VEIL_ALPHA);
+  } else {
+    ctx.fillStyle = '#0a0a16';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
   // Grid lines
-  ctx.strokeStyle = 'rgba(40, 40, 80, 0.4)';
+  ctx.strokeStyle = 'rgba(60, 60, 110, 0.35)';
   ctx.lineWidth = 0.5;
   for (let c = 1; c < COLS; c++) {
     ctx.beginPath();
@@ -948,6 +962,16 @@ function drawBoard() {
     ctx.fillStyle = 'rgba(180, 50, 255, 0.4)';
     ctx.textAlign = 'right';
     ctx.fillText('PIRATE', canvas.width - 6, 14);
+    ctx.restore();
+  }
+
+  // Mine (roguelike stage) badge
+  if (gameMode === 'mine') {
+    ctx.save();
+    ctx.font = '10px "Press Start 2P", monospace';
+    ctx.fillStyle = 'rgba(255, 190, 80, 0.45)';
+    ctx.textAlign = 'right';
+    ctx.fillText('MINE', canvas.width - 6, 14);
     ctx.restore();
   }
 
@@ -1087,6 +1111,7 @@ function updateUI() {
   document.getElementById('score-display').textContent = score.toLocaleString();
   document.getElementById('level-display').textContent = level;
   document.getElementById('lines-display').textContent = lines;
+  if (window.Rogue && Rogue.inStage) Rogue.updateStagePanel();
 }
 
 function updateTimer() {
@@ -1178,22 +1203,30 @@ function gameLoop(timestamp) {
     updatePirateShip(frameDelta);
   }
 
+  // Background belt-scroll (speed follows level; bottom reached at level 10)
+  if (window.BgScroller && frameDelta > 0 && frameDelta < 500) {
+    BgScroller.update(frameDelta, level, lines);
+  }
+
   drawBoard();
   animFrame = requestAnimationFrame(gameLoop);
 }
 
 // ─── GAME CONTROLS ───
-function startGame(mode) {
+function startGame(mode, opts = {}) {
   gameMode = mode || 'pirate';
+  const startLevel = Math.max(1, (opts && opts.startLevel) | 0 || 1);
   switchScreen('game-screen');
   initCanvases();
   createBoard();
 
   score = 0;
-  level = 1;
+  level = startLevel;
+  levelOffset = startLevel - 1;
   lines = 0;
   playTime = 0;
-  dropSpeed = 800;
+  dropSpeed = Math.max(80, 800 - (level - 1) * 60);
+  pirateTimeTrigger = (opts && opts.pirateTimeTrigger) || PIRATE_TIME_TRIGGER;
   heldPiece = null;
   canHold = true;
   lockDelay = 0;
@@ -1238,6 +1271,15 @@ function startGame(mode) {
   risingSlideOffset = 0;
   risingPendingRow = null;
   risingPendingGemRow = null;
+
+  // Background theme for this mode
+  if (window.BgScroller) BgScroller.start(BG_THEME_BY_MODE[gameMode] || 'jewel', startLevel);
+
+  // Roguelike stage panel / overlay
+  const roguePanel = document.getElementById('rogue-panel');
+  if (roguePanel) roguePanel.style.display = opts && opts.rogue ? 'block' : 'none';
+  const rogueOverlay = document.getElementById('rogue-stage-overlay');
+  if (rogueOverlay) rogueOverlay.classList.add('hidden');
 
   // Show/hide rising panel
   const risingPanel = document.getElementById('rising-panel');
@@ -1300,6 +1342,8 @@ function resumeGame() {
 }
 
 function gameOver() {
+  // Roguelike stage: topping out ends the whole run
+  if (window.Rogue && Rogue.inStage) { Rogue.onStageFailed(); return; }
   isPlaying = false;
   isPaused = false;
   clearInterval(timerInterval);
@@ -1350,6 +1394,7 @@ function backToMenu() {
   if (animFrame) cancelAnimationFrame(animFrame);
   if (gameMode === 'pirate') endPirateShip();
   AudioManager.stopAllBGM();
+  if (window.Rogue) Rogue.abandon();
   showMenu();
 }
 
@@ -1490,7 +1535,7 @@ function resetPirateTriggers() {
 
 function checkPirateSpawnTrigger() {
   if (gameMode !== 'pirate' || pirateShipActive || pirateWarning) return;
-  if (pirateScoreAccum >= PIRATE_SCORE_TRIGGER || pirateTimeAccum >= PIRATE_TIME_TRIGGER) {
+  if (pirateScoreAccum >= PIRATE_SCORE_TRIGGER || pirateTimeAccum >= pirateTimeTrigger) {
     startPirateWarning();
     resetPirateTriggers();
   }
@@ -1605,6 +1650,7 @@ function updatePirateShip(frameDelta) {
         color: '#3bff6e',
       });
       endPirateShip();
+      if (window.Rogue) Rogue.onPirateResult(true);
     }
     return;
   }
@@ -1673,6 +1719,8 @@ function updatePirateShip(frameDelta) {
         color: '#ff8c3b',
       });
       endPirateShip();
+      // Roguelike pirate stage: a single encounter decides the stage
+      if (window.Rogue && Rogue.onPirateResult(false)) return;
       // Check game over
       if (pirateMissCount >= PIRATE_MAX_MISS) {
         setTimeout(() => { gameOver(); }, 500);

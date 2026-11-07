@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tetris-pirate-v1';
+const CACHE_NAME = 'tetris-pirate-v2';
 const ASSETS = [
   '/mobile/',
   '/mobile/index.html',
@@ -7,6 +7,15 @@ const ASSETS = [
   '/mobile/manifest.json',
   '/mobile/icons/icon-192.png',
   '/mobile/icons/icon-512.png',
+  '/bg-scroller.js',
+  '/backgrounds/jewel_1.webp',
+  '/backgrounds/jewel_2.webp',
+  '/backgrounds/jewel_3.webp',
+  '/backgrounds/jewel_4.webp',
+  '/backgrounds/space_1.webp',
+  '/backgrounds/space_2.webp',
+  '/backgrounds/space_3.webp',
+  '/backgrounds/space_4.webp',
   '/sounds/levelup.mp3',
   '/sounds/tile_put_on.mp3',
   '/sounds/button_click.mp3',
