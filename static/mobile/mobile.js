@@ -180,8 +180,9 @@ function drawCell_(cx_,x,y,sz,ci,ghost,gem){
 }
 
 function drawBoard_(){
-  cx.fillStyle='#0a0a16';cx.fillRect(0,0,cv.width,cv.height);
-  cx.strokeStyle='rgba(40,40,80,.3)';cx.lineWidth=.5;
+  // Belt-scrolling theme background (space open-pit mine)
+  if(window.BgScroller)BgScroller.draw(cx,cv.width,cv.height,.5);else{cx.fillStyle='#0a0a16';cx.fillRect(0,0,cv.width,cv.height);}
+  cx.strokeStyle='rgba(60,60,110,.3)';cx.lineWidth=.5;
   for(let c=1;c<COLS;c++){cx.beginPath();cx.moveTo(c*CELL,0);cx.lineTo(c*CELL,cv.height);cx.stroke();}
   for(let r=1;r<ROWS;r++){cx.beginPath();cx.moveTo(0,r*CELL);cx.lineTo(cv.width,r*CELL);cx.stroke();}
   for(let r=HIDDEN;r<TOTAL;r++)for(let c=0;c<COLS;c++)if(board[r][c])drawCell_(cx,c*CELL,(r-HIDDEN)*CELL,CELL,board[r][c],false,gemBoard[r][c]);
@@ -276,6 +277,7 @@ function loop(ts){
   if(cur&&!valid(cur,1,0)){lockDly+=d;if(lockDly>=lockLim){lockP();lockDly=0;lockMoves=0;lastDrop_=ts;}}
   else if(d>=dropSpd){if(cur){cur.row++;if(!valid(cur,1,0)){lockDly=0;lockMoves=0;}}lastDrop_=ts;}
   if(fd>0&&fd<500)updShip(fd);
+  if(window.BgScroller&&fd>0&&fd<500)BgScroller.update(fd,level_,lines_);
   drawBoard_();animF=requestAnimationFrame(loop);
 }
 
@@ -284,6 +286,7 @@ function startGame_(){
   showScreen('game-screen'); initCV(); mkBoard();
   score_=0;level_=1;lines_=0;playTime_=0;dropSpd=800;held=null;canHold_=true;lockDly=0;lockMoves=0;lastDrop_=0;lastFT=0;flashRows=[];flashGem=false;bag_=[];nq=[];gemPopup=null;gemTotal=0;resetGem();
   pSA=0;pTA=0;pActive=false;pWarn=false;pLaser=false;pGV=0;pGM=P_GB;pGVis=false;pSmoke=[];pPopups=[];pKills=0;pMisses=0;pState='idle';pLaneVis=false;pStealDone=false;pAngle=0;
+  if(window.BgScroller)BgScroller.start('space');
   updUI(); drawHold();
   document.getElementById('pause-ov').classList.add('hidden');
   document.getElementById('go-ov').classList.add('hidden');
