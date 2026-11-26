@@ -651,3 +651,217 @@ html, body {
   .panel-value { font-size: 16px; }
   .btn { min-width: 220px; padding: 14px 32px; font-size: 16px; }
 }
+
+/* ═══════════════════════════════════════════════
+   ROGUELIKE MODE
+   ═══════════════════════════════════════════════ */
+.btn-rogue {
+  background: linear-gradient(135deg, #2b3a8f, #6b3bff);
+  color: #fff;
+  box-shadow: 0 4px 20px rgba(107, 59, 255, 0.4);
+}
+.btn-rogue:hover { box-shadow: 0 6px 30px rgba(107, 59, 255, 0.6); }
+
+/* In-game stage panel */
+.rogue-box { background: linear-gradient(135deg, var(--bg-card), rgba(40, 30, 90, 0.4)); }
+.rogue-goal { font-size: 13px; color: #ffcf6b; line-height: 1.6; }
+.rogue-hint { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+.rogue-run { font-size: 11px; color: var(--text-secondary); margin-top: 8px; }
+.rogue-run span { color: var(--yellow); font-weight: 700; }
+.rogue-stage-content h2 { font-size: 20px; line-height: 1.5; }
+.rogue-stage-content .btn { margin: 0 auto; }
+.rogue-stage-content b { color: var(--yellow); }
+
+/* Map screen */
+#rogue-screen { background: #05060d; }
+.rg-layout { display: flex; gap: 24px; align-items: center; height: 100%; padding: 12px; }
+.rg-side { width: 220px; display: flex; flex-direction: column; gap: 12px; }
+.rg-title { font-family: 'Press Start 2P', monospace; font-size: 14px; color: #c9b8ff; text-align: center; }
+.rg-points { color: var(--yellow); text-shadow: 0 0 10px rgba(255, 216, 59, 0.5); font-size: 18px; }
+.rg-points small { font-size: 11px; }
+.rg-progress { font-size: 16px; font-weight: 700; color: #fff; }
+.rg-route-info { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+.rg-licenses { display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.rg-lic-row { display: flex; align-items: center; gap: 8px; }
+.rg-lic-row img { width: 44px; height: 44px; object-fit: contain; }
+.rg-lic-row.none img { filter: grayscale(1) brightness(0.35); }
+.rg-lic-name { font-size: 12px; color: var(--text-primary); }
+.rg-lic-grade { font-size: 11px; font-weight: 700; }
+.grade-none { color: #555577; }
+.grade-bronze { color: #e0915a; }
+.grade-silver { color: #cfd8e6; }
+.grade-gold { color: #ffd34d; }
+.grade-platinum { color: #b9fff4; text-shadow: 0 0 6px rgba(185, 255, 244, 0.6); }
+.rg-legend { display: flex; justify-content: space-around; font-size: 11px; color: var(--text-secondary); }
+.rg-legend > div { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.rg-legend-dot {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 900; color: #fff;
+}
+.rg-giveup { min-width: 0; padding: 10px 16px; font-size: 13px; }
+
+.rg-map {
+  position: relative;
+  height: calc(100vh - 24px);
+  max-height: 1024px;
+  aspect-ratio: 572 / 1024;
+  background: url('roguelike/roadmap.webp') center / 100% 100% no-repeat;
+  border-radius: 10px;
+  box-shadow: 0 0 40px rgba(80, 120, 255, 0.15);
+  overflow: hidden;
+}
+#rg-edges { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.rg-edge { stroke: rgba(200, 210, 255, 0.22); stroke-width: 2; stroke-dasharray: 6 6; }
+.rg-edge.open { stroke: rgba(140, 200, 255, 0.95); stroke-width: 3; animation: rgDash 0.8s linear infinite; }
+.rg-edge.done { stroke: #ffc66b; stroke-width: 3.5; stroke-dasharray: none; filter: drop-shadow(0 0 3px #ffa53b); }
+@keyframes rgDash { to { stroke-dashoffset: -12; } }
+#rg-nodes { position: absolute; inset: 0; }
+
+.rg-node {
+  position: absolute;
+  width: 7.2%; aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; cursor: default; padding: 0;
+  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+}
+.rg-node-icon { font-size: clamp(11px, 1.9vh, 22px); font-weight: 900; line-height: 1; pointer-events: none; }
+.rg-node--event  { background: radial-gradient(circle at 35% 30%, #8a7bff, #3c2b9e); }
+.rg-node--mine   { background: radial-gradient(circle at 35% 30%, #ffb35c, #8a4b14); }
+.rg-node--pirate { background: radial-gradient(circle at 35% 30%, #ff6b6b, #7a1020); }
+.rg-node.is-locked  { filter: grayscale(0.6) brightness(0.55); }
+.rg-node.is-visited { filter: grayscale(0.85) brightness(0.45); border-color: #ffc66b; }
+.rg-node.is-current { border-color: #ffc66b; box-shadow: 0 0 0 3px rgba(255, 198, 107, 0.35), 0 0 18px #ffb347; }
+.rg-node.is-available {
+  cursor: pointer; border-color: #bfe3ff;
+  animation: rgPulse 1.4s ease-in-out infinite;
+}
+.rg-node.is-available:hover { transform: translate(-50%, -50%) scale(1.18); animation: none; box-shadow: 0 0 22px #9fd4ff; }
+@keyframes rgPulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(140, 200, 255, 0.5); }
+  50%      { box-shadow: 0 0 20px rgba(140, 200, 255, 1); }
+}
+.rg-end {
+  position: absolute; width: 11%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border-radius: 50%; background: transparent; border: none; cursor: default;
+}
+.rg-end.is-available { cursor: pointer; animation: rgPulse 1.4s ease-in-out infinite; }
+.rg-end.is-done { box-shadow: 0 0 30px #ffc66b; }
+.rg-start-label, .rg-end-label {
+  position: absolute; transform: translate(-50%, -50%);
+  font-family: 'Press Start 2P', monospace; font-size: clamp(7px, 1vh, 10px);
+  color: rgba(255, 220, 160, 0.8); pointer-events: none;
+}
+.rg-end-label { color: rgba(190, 230, 255, 0.8); }
+.rg-player {
+  position: absolute; width: 4%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border-radius: 50%; border: 2px solid #ffc66b; animation: rgPulse 1.4s infinite; pointer-events: none;
+}
+
+/* Modals */
+.rg-modal {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.72); backdrop-filter: blur(3px);
+}
+.rg-modal.hidden { display: none; }
+.rg-event-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; animation: fadeInUp 0.3s ease; }
+.rg-event-top { font-size: 15px; color: var(--text-secondary); }
+.rg-event-top b { color: var(--yellow); font-size: 18px; }
+
+/* Event panel – 1em = 16 px of the 1024×572 source image */
+.rg-event-panel {
+  position: relative;
+  background: center / 100% 100% no-repeat;
+  border-radius: 6px;
+  box-shadow: 0 10px 50px rgba(0, 0, 0, 0.8);
+}
+.rg-choice-box {
+  position: absolute;
+  left: 6.84%; top: 56.47%;          /* empty box in the art: x 70..489, y 323..512 */
+  width: 40.9%; height: 33.04%;
+  display: grid; gap: 0.35em;
+  padding: 0.3em;
+}
+.rg-choice-box.grid-2x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr 0.8fr; }
+.rg-btn--wide { grid-column: 1 / -1; }
+
+/* Choice button – the supplied art is the frame (blue = ok, red = poor, black = locked) */
+.rg-btn {
+  position: relative;
+  display: flex; align-items: center; gap: 0.35em;
+  min-width: 0; min-height: 0;
+  border-style: solid;
+  border-width: 0.55em 0.75em 0.75em;
+  border-image-slice: 26 40 36 40 fill;
+  border-image-repeat: stretch;
+  background: none;
+  padding: 0 0.1em;
+  color: #fff;
+  font-family: 'Noto Sans KR', sans-serif;
+  cursor: pointer;
+  transition: transform 0.12s, filter 0.12s;
+  text-align: left;
+}
+.rg-btn--ok:hover { transform: translateY(-0.08em); filter: brightness(1.2) drop-shadow(0 0 0.4em rgba(80, 140, 255, 0.8)); }
+.rg-btn--ok:active { transform: translateY(0.05em); }
+.rg-btn--poor, .rg-btn--locked { cursor: not-allowed; }
+.rg-btn--locked { color: #9a9aa8; }
+.rg-btn-icon { height: 2.4em; width: 2.4em; object-fit: contain; flex: none; filter: drop-shadow(0 0 0.15em #000); }
+.rg-btn--locked .rg-btn-icon { filter: grayscale(0.8) brightness(0.6); }
+.rg-btn-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.rg-btn--wide .rg-btn-text { flex-direction: row; align-items: baseline; gap: 0.6em; margin: 0 auto; }
+.rg-btn-title { font-size: 0.82em; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; }
+.rg-btn-sub { font-size: 0.66em; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; }
+.rg-btn--poor .rg-btn-sub { color: #ffb3b3; }
+.rg-btn.shake { animation: rgShake 0.35s; }
+@keyframes rgShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-0.25em); }
+  75% { transform: translateX(0.25em); }
+}
+
+/* License acquired popup */
+.rg-acquire {
+  position: fixed; inset: 0; z-index: 210;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.6); cursor: pointer;
+}
+.rg-acquire.hidden { display: none; }
+.rg-acquire-card { text-align: center; animation: rgPop 0.45s cubic-bezier(.2, 1.6, .4, 1); }
+.rg-acquire-card img { width: 220px; height: 220px; object-fit: contain; filter: drop-shadow(0 0 25px rgba(255, 220, 120, 0.7)); }
+.rg-acquire-title { font-family: 'Press Start 2P', monospace; font-size: 18px; color: #fff; margin-top: 8px; }
+.rg-acquire-name { font-size: 22px; font-weight: 900; margin-top: 10px; }
+.rg-acquire-hint { font-size: 12px; color: var(--text-secondary); margin-top: 14px; }
+@keyframes rgPop { from { transform: scale(0.3) rotate(-12deg); opacity: 0; } to { transform: none; opacity: 1; } }
+
+/* Result card */
+.rg-result-card {
+  background: var(--bg-card); border: 1px solid var(--border-glow); border-radius: 16px;
+  padding: 30px 40px; text-align: center; min-width: 360px; animation: fadeInUp 0.3s ease;
+}
+.rg-result-card h2 { font-size: 24px; margin-bottom: 16px; }
+.rg-result-card p { line-height: 2; }
+.rg-result-card b { color: var(--yellow); }
+.rg-result-card .btn { margin: 20px auto 0; }
+.rg-result-lics { display: flex; gap: 6px; justify-content: center; margin-top: 10px; flex-wrap: wrap; }
+.rg-result-lics img { width: 64px; height: 64px; object-fit: contain; }
+.dim { color: var(--text-secondary); font-size: 13px; }
+
+.rg-toast {
+  position: fixed; left: 50%; bottom: 8%; transform: translate(-50%, 20px);
+  padding: 10px 22px; border-radius: 10px; z-index: 300;
+  background: rgba(30, 30, 50, 0.95); color: #fff; font-size: 14px; font-weight: 700;
+  opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
+}
+.rg-toast.show { opacity: 1; transform: translate(-50%, 0); }
+.rg-toast.red { background: rgba(140, 20, 30, 0.95); }
+.rg-toast.gray { background: rgba(50, 50, 60, 0.95); }
+
+@media (max-width: 860px) {
+  .rg-side { width: 160px; }
+  .rg-layout { gap: 12px; }
+}
