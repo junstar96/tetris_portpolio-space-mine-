@@ -29,6 +29,10 @@
   const ROW_Y0 = 140, ROW_Y1 = 885;        // first / last node row (image px)
   const SHORTEST_RANGE = [8, 9];
   const LONGEST_RANGE = [11, 12];
+  const HUB_X = 286;                       // all routes meet here (map centre line)
+  const HUB_COL = 9;                       // pseudo column → unique node id for the hub
+  const EVENT_RATIO = 0.3;                 // (mine + pirate) : event = 7 : 3
+  const PIRATE_SHARE = 0.35;               // share of pirate nodes among combat nodes
 
   const ASSET = 'roguelike/';
   const BTN_IMG = { ok: ASSET + 'btn_blue.webp', poor: ASSET + 'btn_red.webp', locked: ASSET + 'btn_black.webp' };
@@ -54,6 +58,7 @@
     event:  { icon: '?',  label: '이벤트',  desc: '무슨 일이 일어날지 모른다' },
     mine:   { icon: '⛏', label: '광산',    desc: '목표 줄 수를 제거하면 클리어' },
     pirate: { icon: '☠', label: '해적선',  desc: '해적선을 격추하면 현상금 획득' },
+    hub:    { icon: '📜', label: '자격증 시험', desc: '모든 경로가 만나는 지점 — 반드시 자격증 시험이 열린다' },
   };
 
   // ═══════════════════════════════════════════════════════════
@@ -91,7 +96,7 @@
 
   // Geometry checks: no crossing edges, no edge passing over another node
   function geometryOk(nodes, rows) {
-    const P = n => ({ x: LANE_X[n.col], y: rowY(n.row, rows) });
+    const P = n => ({ x: n.bx, y: rowY(n.row, rows) });
     const edges = [];
     for (const n of nodes.values()) for (const m of n.next) edges.push([n, nodes.get(m)]);
     const orient = (a, b, c) => Math.sign((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
@@ -115,52 +120,69 @@
     return true;
   }
 
-  function assignTypes(rand, nodes, rows) {
-    const list = [...nodes.values()].sort((a, b) => a.row - b.row || a.col - b.col);
-    for (let attempt = 0; attempt < 60; attempt++) {
+  /**
+   * Node types. The hub is always the license exam. Of all nodes (hub
+   * included) exactly round(N * 0.3) are events, so over many maps the
+   * (mine + pirate) : event ratio converges to 7 : 3.
+   * Among the random layouts tried, the one with the fewest "bad" patterns
+   * (event→event, pirate→pirate, pirate on the first row) is kept.
+   */
+  function assignTypes(rand, nodes, hubId) {
+    const list = [...nodes.values()];
+    const others = list.filter(n => n.id !== hubId);
+    const total = list.length;
+    const eventsWanted = Math.max(1, Math.round(total * EVENT_RATIO));
+    const evOthers = eventsWanted - 1;               // hub is one of the events
+    const combat = others.length - evOthers;
+    const pirates = Math.round(combat * PIRATE_SHARE);
+    const hub = nodes.get(hubId);
+    hub.type = 'event'; hub.event = 'exam'; hub.hub = true;
+
+    let best = null, bestScore = Infinity;
+    for (let attempt = 0; attempt < 250 && bestScore > 0; attempt++) {
+      const order = shuffle(rand, others.slice());
+      const types = new Map([[hubId, 'event']]);
+      order.forEach((n, i) => types.set(n.id, i < evOthers ? 'event' : 'mine'));
+      // Pirates: prefer combat nodes that are not on the first row
+      const combatNodes = shuffle(rand, order.slice(evOthers)).sort((x, y) => (x.row === 0) - (y.row === 0));
+      combatNodes.slice(0, pirates).forEach(n => types.set(n.id, 'pirate'));
+
+      let score = 0;
       for (const n of list) {
-        if (n.row === 0) { n.type = rand() < 0.5 ? 'event' : 'mine'; continue; }
-        const parentPirate = [...n.prev].some(id => nodes.get(id).type === 'pirate');
-        const x = rand();
-        if (n.row >= 2 && !parentPirate && x < 0.22) n.type = 'pirate';
-        else n.type = x < 0.6 ? 'event' : 'mine';
+        const t = types.get(n.id);
+        if (n.row === 0 && t === 'pirate') score += 5;
+        for (const m of n.next) {
+          const u = types.get(m);
+          if (t === 'event' && u === 'event') score += 3;
+          if (t === 'pirate' && u === 'pirate') score += 2;
+        }
       }
-      // Row 0 with 2+ nodes: guarantee one event and one mine
-      const row0 = list.filter(n => n.row === 0);
-      if (row0.length >= 2) { row0[0].type = 'event'; row0[row0.length - 1].type = 'mine'; }
-      const count = t => list.filter(n => n.type === t).length;
-      if (count('event') >= 3 && count('pirate') >= 2 && count('mine') >= 3) return;
+      if (score < bestScore) { bestScore = score; best = types; }
     }
+    for (const n of others) n.type = best.get(n.id);
   }
 
-  function tryGenerate(rand) {
-    const rows = rand() < 0.5 ? LONGEST_RANGE[0] : LONGEST_RANGE[1];
-    const nodes = new Map();
-    const add = (r, c) => {
-      const k = key(r, c);
-      if (!nodes.has(k)) nodes.set(k, { id: k, row: r, col: c, next: new Set(), prev: new Set() });
-      return nodes.get(k);
-    };
-    const numPaths = 5 + (rand() < 0.5 ? 1 : 0);
-    const starts = shuffle(rand, [0, 1, 2, 3]);
-    const targetShort = randInt(rand, SHORTEST_RANGE[0], SHORTEST_RANGE[1]);
-    // Diagonal edge a→b crosses an existing opposite diagonal in the same row pair?
+  /**
+   * Walk `numPaths` lane paths from row r0 to row r1 (inclusive).
+   * Path 0 never skips (longest route), path 1 uses `shortcutSkips`
+   * vertical 2-row skips (shortest route), the others 0~1 skip.
+   */
+  function walkSegment(rand, nodes, add, r0, r1, numPaths, shortcutSkips) {
     const crosses = (r, c, nc) => {
       if (nc === c) return false;
       const o = nodes.get(key(r, nc));
       return !!(o && o.next.has(key(r + 1, c)));
     };
+    const starts = shuffle(rand, [0, 1, 2, 3]);
     for (let p = 0; p < numPaths; p++) {
-      // Skip budget: path 0 = none (full-length route), path 1 = shortcut route
-      // that hits the target shortest length, others = 0~1 short skips.
-      let skips = p === 0 ? 0 : p === 1 ? rows - targetShort : (rand() < 0.5 ? 1 : 0);
+      let skips = p === 0 ? 0 : p === 1 ? shortcutSkips : (rand() < 0.4 ? 1 : 0);
       let c = p < LANES ? starts[p] : randInt(rand, 0, LANES - 1);
-      let r = 0, n = add(0, c);
-      while (r < rows - 1) {
-        const rowsLeft = rows - 1 - r;
-        // Spend skips randomly but make sure the whole budget is used
-        let skip = skips > 0 && r + 2 <= rows - 1 && (rand() < skips / Math.max(1, rowsLeft - skips) || rowsLeft <= skips * 2);
-        if (skip && nodes.has(key(r + 1, c))) skip = false;        // vertical skip must pass an empty slot
+      let r = r0, n = add(r0, c);
+      while (r < r1) {
+        const rowsLeft = r1 - r;
+        let skip = skips > 0 && r + 2 <= r1 &&
+          (rand() < skips / Math.max(1, rowsLeft - skips) || rowsLeft <= skips * 2);
+        if (skip && nodes.has(key(r + 1, c))) skip = false;   // vertical skip must pass an empty slot
         let nr, nc;
         if (skip) { nr = r + 2; nc = c; skips--; }
         else {
@@ -173,19 +195,59 @@
         n = m; r = nr; c = nc;
       }
     }
+  }
+
+  /**
+   * Map = top half → HUB (license exam, every route passes it) → bottom half.
+   * Route length = top + 1 + bottom, so shortest/longest are controlled by
+   * the skips in each half and then verified exactly with routeStats().
+   */
+  function tryGenerate(rand) {
+    const rows = rand() < 0.5 ? LONGEST_RANGE[0] : LONGEST_RANGE[1];
+    const hubRow = rows === 11 ? 5 : (rand() < 0.5 ? 5 : 6);
+    const nodes = new Map();
+    const add = (r, c) => {
+      const k = key(r, c);
+      if (!nodes.has(k)) {
+        nodes.set(k, { id: k, row: r, col: c, bx: c === HUB_COL ? HUB_X : LANE_X[c], next: new Set(), prev: new Set() });
+      }
+      return nodes.get(k);
+    };
+
+    // Skip budget so that the shortest route lands on the target length
+    const targetShort = randInt(rand, SHORTEST_RANGE[0], SHORTEST_RANGE[1]);
+    const totalSkips = rows - targetShort;
+    const topRows = hubRow, botRows = rows - 1 - hubRow;
+    const maxTop = Math.floor((topRows - 1) / 2), maxBot = Math.floor((botRows - 1) / 2);
+    const lo = Math.max(0, totalSkips - maxBot), hi = Math.min(maxTop, totalSkips);
+    if (lo > hi) return null;
+    const skipTop = randInt(rand, lo, hi), skipBot = totalSkips - skipTop;
+
+    walkSegment(rand, nodes, add, 0, hubRow - 1, 3 + (rand() < 0.5 ? 1 : 0), skipTop);
+    walkSegment(rand, nodes, add, hubRow + 1, rows - 1, 3 + (rand() < 0.5 ? 1 : 0), skipBot);
+
+    // Converge into the hub and fan out again
+    const hub = add(hubRow, HUB_COL);
+    for (const n of [...nodes.values()]) {
+      if (n.row === hubRow - 1) { n.next.add(hub.id); hub.prev.add(n.id); }
+      if (n.row === hubRow + 1) { hub.next.add(n.id); n.prev.add(hub.id); }
+    }
+
     const { shortest, longest } = routeStats(nodes, rows);
     if (shortest < SHORTEST_RANGE[0] || shortest > SHORTEST_RANGE[1]) return null;
     if (longest < LONGEST_RANGE[0] || longest > LONGEST_RANGE[1]) return null;
     if (!geometryOk(nodes, rows)) return null;
 
-    assignTypes(rand, nodes, rows);
+    assignTypes(rand, nodes, hub.id);
     for (const n of nodes.values()) {
-      n.x = LANE_X[n.col] + (rand() - 0.5) * 26;
-      n.y = rowY(n.row, rows) + (rand() - 0.5) * 12;
+      const jitter = n.hub ? 0 : 1;
+      n.x = n.bx + (rand() - 0.5) * 26 * jitter;
+      n.y = rowY(n.row, rows) + (rand() - 0.5) * 12 * jitter;
       n.next = [...n.next].sort((a, b) => a - b);
       n.prev = [...n.prev].sort((a, b) => a - b);
+      delete n.bx;
     }
-    return { rows, shortest, longest, nodes: Object.fromEntries([...nodes].map(([k, v]) => [k, v])) };
+    return { rows, hubRow, hubId: hub.id, shortest, longest, nodes: Object.fromEntries([...nodes]) };
   }
 
   function generateMap(rand = Math.random) {
@@ -289,15 +351,15 @@
       const pct = (v, total) => (v / total * 100).toFixed(3) + '%';
       let html = '';
       for (const n of Object.values(map.nodes)) {
-        const info = NODE_INFO[n.type];
+        const info = n.hub ? NODE_INFO.hub : NODE_INFO[n.type];
         let st = 'locked';
         if (n.id === currentId) st = 'current';
         else if (visited.has(n.id)) st = 'visited';
         else if (avail.has(n.id) && !this.run.finished) st = 'available';
-        html += `<button class="rg-node rg-node--${n.type} is-${st}" data-id="${n.id}"
+        html += `<button class="rg-node rg-node--${n.type}${n.hub ? ' rg-node--hub' : ''} is-${st}" data-id="${n.id}"
           style="left:${pct(n.x, MAP_W)};top:${pct(n.y, MAP_H)}"
           title="${info.label} — ${info.desc}" ${st === 'available' ? '' : 'tabindex="-1"'}>
-          <span class="rg-node-icon">${info.icon}</span></button>`;
+          ${n.hub ? `<img class="rg-hub-icon" src="${licenseImg('gem', 2)}" alt="">` : `<span class="rg-node-icon">${info.icon}</span>`}</button>`;
       }
       const endOpen = avail.has('END') && !this.run.finished;
       html += `<button class="rg-end ${endOpen ? 'is-available' : ''} ${this.run.finished ? 'is-done' : ''}"
@@ -462,7 +524,8 @@
     openEvent(node) {
       // Event pool – only the license exam for now
       const pool = [EVENTS.exam];
-      const ev = pool[Math.floor(Math.random() * pool.length)];
+      // The hub (route meeting point) always hosts its fixed event (license exam)
+      const ev = node.event && EVENTS[node.event] ? EVENTS[node.event] : pool[Math.floor(Math.random() * pool.length)];
       this.event = { node, def: ev, state: {} };
       $('rg-event-panel').style.backgroundImage = `url(${ev.image})`;
       $('rg-event').classList.remove('hidden');
@@ -574,6 +637,7 @@
               <div><span class="rg-legend-dot rg-node--event">?</span> 이벤트</div>
               <div><span class="rg-legend-dot rg-node--mine">⛏</span> 광산</div>
               <div><span class="rg-legend-dot rg-node--pirate">☠</span> 해적선</div>
+              <div><span class="rg-legend-dot rg-node--hub"><img src="${licenseImg('gem', 2)}" alt=""></span> 자격증</div>
             </div>
             <button class="btn btn-menu rg-giveup" onclick="Rogue.confirmAbandon()">포기하고 메뉴로</button>
           </aside>

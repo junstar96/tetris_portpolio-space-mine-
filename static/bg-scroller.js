@@ -33,10 +33,13 @@
   const MIN_GLIDE = 0.12;         // min catch-up speed (fraction of total per second)
   const PRE_FINAL_MAX = 0.97;     // max progress before level 10 (final 3% = arrival at level 10)
 
-  // Gravity interval per level — identical to the game formula.
-  function dropSpeedFor(level) { return Math.max(80, 800 - (level - 1) * 60); }
-  // Game speed factor relative to level 1 (level 1 = 1.0, level 9 = 2.5)
-  function speedFactor(level) { return 800 / dropSpeedFor(level); }
+  // Game speed factor relative to level 1 — uses the shared difficulty curve
+  // (difficulty.js) so the scroll follows the real gravity speed.
+  function speedFactor(level) {
+    const D = global.Difficulty;
+    if (D) return D.gravitySpeed(level) / D.gravitySpeed(1);
+    return 800 / Math.max(80, 800 - (level - 1) * 60);
+  }
 
   // Precompute segment boundaries (as fractions 0..1 of the scrollable distance)
   const segStart = [];            // index = level

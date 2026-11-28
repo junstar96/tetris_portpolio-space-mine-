@@ -66,6 +66,9 @@ let board=[],gemBoard=[];
 let cur=null,held=null,canHold_=true,nq=[],bag_=[];
 let score_=0,level_=1,lines_=0,playTime_=0;
 let tmrInt=null,dropSpd=800,lastDrop_=0,animF=null;
+// Score multiplier 1+int(sqrt(level+6))*0.2 (see difficulty.js); fractional part carried over
+let scoreCarry_=0;
+function scaleP(base){const v=base*Difficulty.scoreMultiplier(level_)+scoreCarry_;const p=Math.floor(v+1e-9);scoreCarry_=v-p;return p;}
 let lockDly=0,lockLim=2000,lockMoves=0;
 const LOCK_MOVE_MAX=15;
 let flashRows=[],flashTime=0,flashGem=false;
@@ -137,10 +140,10 @@ function clearL(){
     full.forEach(r=>{board.splice(r,1);board.unshift(Array(COLS).fill(0));gemBoard.splice(r,1);gemBoard.unshift(Array(COLS).fill(false));});
     flashRows=[];flashGem=false;
     const cl=full.length; lines_+=cl;
-    const mult=hasGem?10:1, gained=LSCORES[cl]*level_*mult;
+    const mult=hasGem?10:1, gained=scaleP(LSCORES[cl]*level_*mult);
     if(pActive&&pGVis) addGauge(gained); else { score_+=gained; pSA+=gained; checkPSpawn(); }
     if(hasGem){gemTotal++;gemPopup={text:`x10 GEM! +${gained.toLocaleString()}`,y:(full[0]-HIDDEN)*CELL,time:performance.now()};resetGem();}
-    const ol=level_; level_=Math.floor(lines_/10)+1; dropSpd=Math.max(80,800-(level_-1)*60);
+    const ol=level_; level_=Difficulty.levelFromLines(lines_,1); dropSpd=Difficulty.dropInterval(level_);
     if(level_>ol) Audio_.sfx('levelup');
     updUI();
   },200);
@@ -158,9 +161,9 @@ function rstLock(){if(lockMoves<LOCK_MOVE_MAX){lockDly=0;lockMoves++;}}
 function mL(){if(!cur||!isPlay||isPause)return;if(valid(cur,0,-1)){cur.col--;if(!valid(cur,1,0))rstLock();}}
 function mR(){if(!cur||!isPlay||isPause)return;if(valid(cur,0,1)){cur.col++;if(!valid(cur,1,0))rstLock();}}
 function mD(){if(!cur||!isPlay||isPause)return false;if(valid(cur,1,0)){cur.row++;
-  if(pActive&&pGVis)addGauge(1);else{score_+=1;pSA+=1;} lockDly=0;updUI();return true;}return false;}
+  const sp=scaleP(1);if(pActive&&pGVis)addGauge(sp);else{score_+=sp;pSA+=sp;} lockDly=0;updUI();return true;}return false;}
 function hardDrop_(){if(!cur||!isPlay||isPause)return;let d=0;while(valid(cur,1,0)){cur.row++;d++;}
-  if(pActive&&pGVis)addGauge(d*2);else{score_+=d*2;pSA+=d*2;} updUI();lockP();}
+  const hp=scaleP(d*2);if(pActive&&pGVis)addGauge(hp);else{score_+=hp;pSA+=hp;} updUI();lockP();}
 function rot_(){if(!cur||!isPlay||isPause)return;const nr=(cur.rot+1)%4;
   for(const[dc,dr]of KICKS){const t={...cur,col:cur.col+dc,row:cur.row+dr};if(valid(t,0,0,nr)){cur.col=t.col;cur.row=t.row;cur.rot=nr;cur.cells=pCells(cur,nr);if(!valid(cur,1,0))rstLock();return;}}}
 function hold_(){if(!cur||!canHold_||!isPlay||isPause)return;canHold_=false;const hg=cur.hasGem,gi=cur.gemIdx,n=cur.name;
@@ -274,8 +277,12 @@ function loop(ts){
   if(!isPlay||isPause){lastFT=0;animF=requestAnimationFrame(loop);return;}
   const fd=lastFT?(ts-lastFT):0; lastFT=ts;
   if(!lastDrop_)lastDrop_=ts; const d=ts-lastDrop_;
-  if(cur&&!valid(cur,1,0)){lockDly+=Math.min(fd,100); /* per-frame time, not time-since-drop */if(lockDly>=lockLim){lockP();lockDly=0;lockMoves=0;lastDrop_=ts;}}
-  else if(d>=dropSpd){if(cur){cur.row++;if(!valid(cur,1,0)){lockDly=0;lockMoves=0;}}lastDrop_=ts;}
+  if(cur&&!valid(cur,1,0)){lockDly+=Math.min(fd,100);lastDrop_=ts; /* per-frame time; gravity clock paused while resting */if(lockDly>=lockLim){lockP();lockDly=0;lockMoves=0;lastDrop_=ts;}}
+  else if(d>=dropSpd){ // several rows per frame at high levels (L30 = 12.5ms/row)
+    const ed=Math.min(d,dropSpd+Math.min(fd||0,100)); // never catch up more than one stale step
+    const st=Math.max(1,Math.min(TOTAL,Math.floor(ed/dropSpd)));let landed=false;
+    if(cur){for(let i=0;i<st&&valid(cur,1,0);i++)cur.row++;if(!valid(cur,1,0)){landed=true;lockDly=0;lockMoves=0;}}
+    lastDrop_=landed?ts:ts-Math.max(0,ed-st*dropSpd);}
   if(fd>0&&fd<500)updShip(fd);
   if(window.BgScroller&&fd>0&&fd<500)BgScroller.update(fd,level_,lines_);
   drawBoard_();animF=requestAnimationFrame(loop);
@@ -284,7 +291,7 @@ function loop(ts){
 // ─── GAME CTRL ───
 function startGame_(){
   showScreen('game-screen'); initCV(); mkBoard();
-  score_=0;level_=1;lines_=0;playTime_=0;dropSpd=800;held=null;canHold_=true;lockDly=0;lockMoves=0;lastDrop_=0;lastFT=0;flashRows=[];flashGem=false;bag_=[];nq=[];gemPopup=null;gemTotal=0;resetGem();
+  score_=0;level_=1;lines_=0;playTime_=0;dropSpd=Difficulty.dropInterval(1);scoreCarry_=0;held=null;canHold_=true;lockDly=0;lockMoves=0;lastDrop_=0;lastFT=0;flashRows=[];flashGem=false;bag_=[];nq=[];gemPopup=null;gemTotal=0;resetGem();
   pSA=0;pTA=0;pActive=false;pWarn=false;pLaser=false;pGV=0;pGM=P_GB;pGVis=false;pSmoke=[];pPopups=[];pKills=0;pMisses=0;pState='idle';pLaneVis=false;pStealDone=false;pAngle=0;
   if(window.BgScroller)BgScroller.start('space');
   updUI(); drawHold();

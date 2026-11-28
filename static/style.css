@@ -865,3 +865,16 @@ html, body {
   .rg-side { width: 160px; }
   .rg-layout { gap: 12px; }
 }
+
+/* Score multiplier under the level value */
+.score-mult { font-size: 11px; color: var(--text-secondary); margin-top: 6px; letter-spacing: 1px; }
+
+/* Roguelike hub (all routes meet → license exam) */
+.rg-node.rg-node--hub {
+  width: 10%;
+  background: radial-gradient(circle at 35% 30%, #ffe08a, #8a5a12);
+  border-color: #ffd36b;
+}
+.rg-hub-icon { width: 78%; height: 78%; object-fit: contain; pointer-events: none; filter: drop-shadow(0 0 3px #000); }
+.rg-legend-dot.rg-node--hub { background: radial-gradient(circle at 35% 30%, #ffe08a, #8a5a12); }
+.rg-legend-dot img { width: 22px; height: 22px; object-fit: contain; }

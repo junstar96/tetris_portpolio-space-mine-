@@ -319,6 +319,18 @@ const LOCK_MOVE_LIMIT = 15;  // max resets allowed (standard guideline)
 let lineFlashRows = [];
 let lineFlashTime = 0;
 
+// ─── SCORE MULTIPLIER ───
+// Every point gain is scaled by Difficulty.scoreMultiplier(level)
+// (= 1 + int(sqrt(level + 6)) * 0.2). The fractional part is carried over so
+// small gains such as +1 soft-drop points are not lost to rounding.
+let scoreCarry = 0;
+function scalePoints(base) {
+  const v = base * Difficulty.scoreMultiplier(level) + scoreCarry;
+  const pts = Math.floor(v + 1e-9);
+  scoreCarry = v - pts;
+  return pts;
+}
+
 // ─── GEM SYSTEM STATE ───
 let gemTimeThreshold = 0;     // seconds until gem activates (10-30)
 let gemBlockThreshold = 0;    // blocks until gem activates (100-500)
@@ -577,7 +589,7 @@ function clearLines() {
 
     // SCORING: 10x multiplier if gem was in cleared rows
     const multiplier = hasGemInCleared ? 10 : 1;
-    const gained = LINE_SCORES[cleared] * level * multiplier;
+    const gained = scalePoints(LINE_SCORES[cleared] * level * multiplier);
 
     // Pirate mode: divert to gauge if ship active, else add to score
     if (gameMode === 'pirate' && pirateShipActive && pirateGaugeVisible) {
@@ -604,8 +616,8 @@ function clearLines() {
     }
 
     const oldLevel = level;
-    level = Math.floor(lines / 10) + 1 + levelOffset;
-    dropSpeed = Math.max(80, 800 - (level - 1) * 60);
+    level = Difficulty.levelFromLines(lines, 1 + levelOffset);   // capped at 30
+    dropSpeed = Difficulty.dropInterval(level);
 
     // SFX: level up
     if (level > oldLevel) {
@@ -681,11 +693,12 @@ function moveDown() {
   if (isValid(currentPiece, 1, 0)) {
     currentPiece.row++;
     // Pirate: divert score to gauge if ship active
+    const pts = scalePoints(1); // soft drop bonus
     if (gameMode === 'pirate' && pirateShipActive && pirateGaugeVisible) {
-      addPirateGaugeEnergy(1);
+      addPirateGaugeEnergy(pts);
     } else {
-      score += 1; // soft drop bonus
-      if (gameMode === 'pirate') { pirateScoreAccum += 1; }
+      score += pts;
+      if (gameMode === 'pirate') { pirateScoreAccum += pts; }
     }
     // When piece moves down, reset lock delay timer but NOT the move count
     // (gravity/soft drop doesn't count toward move limit)
@@ -704,11 +717,12 @@ function hardDrop() {
     dropped++;
   }
   // Pirate: divert hard drop score to gauge if ship active
+  const pts = scalePoints(dropped * 2);
   if (gameMode === 'pirate' && pirateShipActive && pirateGaugeVisible) {
-    addPirateGaugeEnergy(dropped * 2);
+    addPirateGaugeEnergy(pts);
   } else {
-    score += dropped * 2;
-    if (gameMode === 'pirate') { pirateScoreAccum += dropped * 2; }
+    score += pts;
+    if (gameMode === 'pirate') { pirateScoreAccum += pts; }
   }
   updateUI();
   lockPiece();
@@ -1110,6 +1124,8 @@ function drawHoldPreview() {
 function updateUI() {
   document.getElementById('score-display').textContent = score.toLocaleString();
   document.getElementById('level-display').textContent = level;
+  const multEl = document.getElementById('score-mult-display');
+  if (multEl) multEl.textContent = `점수 x${Difficulty.scoreMultiplier(level).toFixed(1)}`;
   document.getElementById('lines-display').textContent = lines;
   if (window.Rogue && Rogue.inStage) Rogue.updateStagePanel();
 }
@@ -1163,6 +1179,7 @@ function gameLoop(timestamp) {
     // gravity step — every frame made the delay grow quadratically, so pieces
     // locked after ~0.3s instead of 2s and couldn't be slid into gaps.)
     lockDelay += Math.min(frameDelta, 100);
+    lastDrop = timestamp; // gravity clock pauses while resting (no burst when sliding off a ledge)
     if (lockDelay >= lockLimit) {
       lockPiece();
       lockDelay = 0;
@@ -1170,15 +1187,26 @@ function gameLoop(timestamp) {
       lastDrop = timestamp;
     }
   } else if (delta >= dropSpeed) {
+    // High levels fall faster than one row per frame (L30 = 12.5ms/row), so
+    // apply every gravity step that elapsed since the last one.
+    // Catch up at most one stale step plus this frame's time, so a stale clock
+    // (after spawn / pause) never teleports the piece several rows.
+    const effDelta = Math.min(delta, dropSpeed + Math.min(frameDelta || 0, 100));
+    const steps = Math.max(1, Math.min(TOTAL_ROWS, Math.floor(effDelta / dropSpeed)));
+    let landed = false;
     if (currentPiece) {
-      currentPiece.row++;
+      for (let i = 0; i < steps; i++) {
+        if (!isValid(currentPiece, 1, 0)) break;
+        currentPiece.row++;
+      }
       // If piece just landed on something, reset lock state for fresh 2s window
       if (!isValid(currentPiece, 1, 0)) {
+        landed = true;
         lockDelay = 0;
         lockMoveCount = 0;
       }
     }
-    lastDrop = timestamp;
+    lastDrop = landed ? timestamp : timestamp - Math.max(0, effDelta - steps * dropSpeed);
   }
 
   // Rising mode: smooth slide-up
@@ -1218,7 +1246,7 @@ function gameLoop(timestamp) {
 // ─── GAME CONTROLS ───
 function startGame(mode, opts = {}) {
   gameMode = mode || 'pirate';
-  const startLevel = Math.max(1, (opts && opts.startLevel) | 0 || 1);
+  const startLevel = Difficulty.clampLevel((opts && opts.startLevel) | 0 || 1);
   switchScreen('game-screen');
   initCanvases();
   createBoard();
@@ -1228,7 +1256,8 @@ function startGame(mode, opts = {}) {
   levelOffset = startLevel - 1;
   lines = 0;
   playTime = 0;
-  dropSpeed = Math.max(80, 800 - (level - 1) * 60);
+  dropSpeed = Difficulty.dropInterval(level);
+  scoreCarry = 0;
   pirateTimeTrigger = (opts && opts.pirateTimeTrigger) || PIRATE_TIME_TRIGGER;
   heldPiece = null;
   canHold = true;
@@ -2137,7 +2166,7 @@ function commitRisingRow() {
   risingPendingGemRow = Array(COLS).fill(false);
 
   // Bonus points for surviving
-  score += 5 * level;
+  score += scalePoints(5 * level);
   updateUI();
 }
 
